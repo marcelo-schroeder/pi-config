@@ -1,0 +1,13 @@
+{
+  "name": "@marceloschroeder/piw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "User-owned git worktree wrapper for pi",
+  "bin": {
+    "piw": "./bin/piw.js"
+  },
+  "scripts": {
+    "test": "node --test ./test/*.test.js"
+  }
+}
