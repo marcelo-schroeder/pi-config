@@ -42,7 +42,21 @@ Show a numbered list of proposed commits, each with:
 
 Then proceed directly to execution unless the user interrupts or gives contrary instructions.
 
-## Step 4: Execute commits
+## Step 4: Create a safety snapshot
+
+Before performing any mutating git command (`git reset`, `git add`, or `git commit`), create a safety snapshot by running:
+
+```bash
+/Users/marceloschroeder/myfiles/projects/pi-config/extensions/git-snapshot/scripts/create-stash-snapshot.sh --json
+```
+
+Behavior:
+
+- If the snapshot command returns `created: true`, briefly report the stash ref and commit hash, then continue.
+- If it returns `created: false`, continue normally.
+- If the snapshot command fails for any reason, stop immediately, report the error, and do not mutate git state.
+
+## Step 5: Execute commits
 
 Use a single shell call when practical, chaining `git add` + `git commit` pairs with `&&`.
 
