@@ -41,16 +41,6 @@ export default function worktreeAwareness(pi: ExtensionAPI): void {
 		return;
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
-		if (!ctx.hasUI) return;
-		ctx.ui.setStatus("piw-worktree", ctx.ui.theme.fg("accent", `wt ${session.name} (${session.branch})`));
-	});
-
-	pi.on("session_shutdown", async (_event, ctx) => {
-		if (!ctx.hasUI) return;
-		ctx.ui.setStatus("piw-worktree", undefined);
-	});
-
 	pi.on("before_agent_start", async (event) => {
 		return {
 			systemPrompt:

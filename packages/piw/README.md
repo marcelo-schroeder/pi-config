@@ -127,7 +127,6 @@ That extension:
 
 - reads `PI_WORKTREE_*` environment variables
 - injects worktree-aware instructions into the system prompt
-- shows a small worktree status in the footer
 - registers a read-only `worktree_info` tool
 
 The `worktree_info` tool is the authoritative source for wrapper session metadata. It includes:
