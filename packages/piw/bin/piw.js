@@ -212,7 +212,7 @@ async function handleRun(options) {
 	} else if (cleanup.protection.kind === "dirty") {
 		console.log(`Kept dirty worktree '${session.name}'.`);
 	} else if (cleanup.protection.kind === "unintegrated") {
-		console.log(`Kept worktree '${session.name}' with commits not merged into '${cleanup.protection.integrationTarget.display}'.`);
+		console.log(`Kept worktree '${session.name}' with commits not merged into ${cleanup.protection.integrationDisplay}.`);
 	} else if (cleanup.protection.kind === "unknown") {
 		console.log(`Kept protected worktree '${session.name}'.`);
 	}

@@ -21,20 +21,55 @@ function getIntegrationTarget(session) {
 	return {
 		remote,
 		branch,
-		ref: `refs/remotes/${remote}/${branch}`,
-		display: `${remote}/${branch}`,
+		localRef: `refs/heads/${branch}`,
+		localDisplay: branch,
+		remoteRef: `refs/remotes/${remote}/${branch}`,
+		remoteDisplay: `${remote}/${branch}`,
 	};
+}
+
+function formatIntegrationTargetDisplay(target) {
+	if (!target) {
+		return "the recorded target branches";
+	}
+
+	const displays = [target.localDisplay, target.remoteDisplay].filter(Boolean);
+	const uniqueDisplays = [...new Set(displays)];
+	return uniqueDisplays.map((display) => `'${display}'`).join(" or ");
 }
 
 async function inspectWorktreeProtection(session) {
 	const hasUncommittedChanges = await isDirtyWorktree(session.path);
 	const target = getIntegrationTarget(session);
 	let integrationStatus = "unknown";
-	let unknownReason = target ? "missing-target-ref" : "missing-target-metadata";
+	let unknownReason = target ? "missing-target-refs" : "missing-target-metadata";
+	let localTargetExists = false;
+	let remoteTargetExists = false;
+	let integratedIntoLocalTarget = false;
+	let integratedIntoRemoteTarget = false;
 
-	if (target && (await revisionExists(session.repoRoot, target.ref))) {
-		integrationStatus = (await isHeadIntegratedInto(session.path, target.ref)) ? "integrated" : "unintegrated";
-		unknownReason = null;
+	if (target) {
+		localTargetExists = await revisionExists(session.repoRoot, target.localRef);
+		remoteTargetExists = await revisionExists(session.repoRoot, target.remoteRef);
+
+		if (remoteTargetExists) {
+			integratedIntoRemoteTarget = await isHeadIntegratedInto(session.path, target.remoteRef);
+		}
+
+		if (!integratedIntoRemoteTarget && localTargetExists) {
+			integratedIntoLocalTarget = await isHeadIntegratedInto(session.path, target.localRef);
+		}
+
+		if (integratedIntoRemoteTarget) {
+			integrationStatus = "integrated";
+			unknownReason = null;
+		} else if (integratedIntoLocalTarget) {
+			integrationStatus = "integrated-local";
+			unknownReason = null;
+		} else if (localTargetExists || remoteTargetExists) {
+			integrationStatus = "unintegrated";
+			unknownReason = null;
+		}
 	}
 
 	let kind = "clean";
@@ -51,6 +86,11 @@ async function inspectWorktreeProtection(session) {
 		hasUncommittedChanges,
 		integrationStatus,
 		integrationTarget: target,
+		integrationDisplay: formatIntegrationTargetDisplay(target),
+		localTargetExists,
+		remoteTargetExists,
+		integratedIntoLocalTarget,
+		integratedIntoRemoteTarget,
 		unknownReason,
 	};
 }
@@ -75,12 +115,12 @@ function printProtectionDetails(protection) {
 	}
 
 	if (protection.integrationStatus === "unintegrated") {
-		console.log(`The worktree has commits not merged into '${protection.integrationTarget.display}'.`);
+		console.log(`The worktree has commits not merged into ${protection.integrationDisplay}.`);
 	}
 
 	if (protection.integrationStatus === "unknown") {
 		if (protection.integrationTarget) {
-			console.log(`piw could not verify whether commits are merged into '${protection.integrationTarget.display}'.`);
+			console.log(`piw could not verify whether commits are merged into ${protection.integrationDisplay}.`);
 		} else {
 			console.log("piw could not verify whether commits are merged because the worktree integration target metadata is missing or incomplete.");
 		}
@@ -93,7 +133,7 @@ function getNonInteractiveKeepMessage(session, protection) {
 	}
 
 	if (protection.kind === "unintegrated") {
-		return `piw: keeping worktree '${session.name}' because it has commits not merged into '${protection.integrationTarget.display}' (no interactive prompt available).`;
+		return `piw: keeping worktree '${session.name}' because it has commits not merged into ${protection.integrationDisplay} (no interactive prompt available).`;
 	}
 
 	return `piw: keeping protected worktree '${session.name}' (no interactive prompt available).`;
@@ -136,11 +176,11 @@ export async function promptRemovalConfirmation(session, protection = {}) {
 		console.log("State: dirty (uncommitted changes will be lost)");
 	}
 	if (protection.integrationStatus === "unintegrated") {
-		console.log(`State: has commits not merged into '${protection.integrationTarget.display}'`);
+		console.log(`State: has commits not merged into ${protection.integrationDisplay}`);
 	}
 	if (protection.integrationStatus === "unknown") {
 		if (protection.integrationTarget) {
-			console.log(`State: integration status unknown relative to '${protection.integrationTarget.display}'`);
+			console.log(`State: integration status unknown relative to ${protection.integrationDisplay}`);
 		} else {
 			console.log("State: integration status unknown (worktree metadata is missing or incomplete)");
 		}
