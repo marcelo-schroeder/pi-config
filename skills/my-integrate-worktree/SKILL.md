@@ -1,6 +1,6 @@
 ---
 name: my-integrate-worktree
-description: "Integrate the current piw-managed worktree branch into its recorded target branch by validating worktree_info metadata, rebasing onto that target, and running the repository integration script. Use only from a piw session. Args: none"
+description: "Integrate the current piw-managed worktree branch into its recorded target branch by validating worktree_info metadata, rebasing onto that target, and running the skill's bundled integration script. Use only from a piw session. Args: none"
 ---
 
 # My Integrate Worktree
@@ -13,7 +13,7 @@ Run all steps without confirmation unless an error occurs.
 
 ## Authorization
 
-Explicit user invocation of this skill is authorization to perform the fetch, rebase, commit, staging, and integration-script operations required by this workflow.
+Explicit user invocation of this skill is authorization to perform the fetch, rebase, commit, staging, and bundled integration-script operations required by this workflow.
 
 Do not perform unrelated git operations outside this workflow.
 
@@ -52,17 +52,19 @@ Then define:
 
 If any check fails, stop and report that this worktree is not eligible for automated integration into its recorded target branch.
 
-## Step 3: Verify repository integration script
+## Step 3: Verify bundled integration helper
 
-Require this script to exist:
+Define `<skill-dir>` as the directory containing this `SKILL.md`.
+
+Require this bundled helper script to exist:
 
 ```text
-<repoRoot>/scripts/integrate_worktree.sh
+<skill-dir>/scripts/integrate_worktree.sh
 ```
 
-If it does not exist, report the missing path and stop.
+This skill owns that script. Do not require or prefer a repository-local `<repoRoot>/scripts/integrate_worktree.sh`.
 
-Assume the repository's integration script is compatible with the recorded target branch. If the repository uses a different integration policy, stop and explain the mismatch when it becomes apparent.
+If the bundled helper script does not exist, report the missing path and stop.
 
 ## Step 4: Check cleanliness
 
@@ -117,17 +119,17 @@ If rebase fails:
 
 Do not automatically resolve rebase conflicts.
 
-## Step 7: Run repository integration
+## Step 7: Run bundled integration helper
 
-Run the repository integration script using the **actual branch from `worktree_info`**:
+Run the bundled helper script using the **actual branch from `worktree_info`** and the recorded target metadata:
 
 ```bash
-<repoRoot>/scripts/integrate_worktree.sh --branch <branch>
+<skill-dir>/scripts/integrate_worktree.sh --repo-root <repoRoot> --branch <branch> --target-remote <target-remote> --target-branch <target-branch>
 ```
 
 If the user asked to skip pushing, append `--skip-push`.
 
-Never derive a branch name from the worktree name.
+Never derive a branch name from the worktree name when `branch` is already available from `worktree_info`.
 
 If the script exits non-zero:
 
@@ -149,11 +151,11 @@ Show:
 
 ## Rules
 
-- This workflow may use `git fetch`, `git rebase`, `git add`, `git commit`, and the repository's `integrate_worktree.sh` script only as required by the steps above
+- This workflow may use `git fetch`, `git rebase`, `git add`, `git commit`, and the skill's bundled `integrate_worktree.sh` helper only as required by the steps above
 - Only pause for user input when an error occurs
 - Do not use upstream tracking as a precondition for this workflow
 - Do not derive branch names from worktree names
 - Do not delete the active worktree or branch
 - Do not use `--force` on any git command
 - Do not use interactive git flags (`-i`, `-p`)
-- Prefer absolute paths when invoking the repository integration script
+- Prefer absolute paths when invoking the bundled integration helper
