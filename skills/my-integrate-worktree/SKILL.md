@@ -1,11 +1,11 @@
 ---
 name: my-integrate-worktree
-description: "Integrate the current piw-managed worktree branch into origin/develop by validating worktree_info metadata, rebasing onto origin/develop, and running the repository integration script. Use only from a piw session. Args: none"
+description: "Integrate the current piw-managed worktree branch into its recorded target branch by validating worktree_info metadata, rebasing onto that target, and running the repository integration script. Use only from a piw session. Args: none"
 ---
 
 # My Integrate Worktree
 
-Integrate the current branch's commits into `origin/develop` from an active `piw`-managed worktree session.
+Integrate the current branch's commits into the recorded target branch from an active `piw`-managed worktree session.
 
 This skill is **piw-only**. It does not support Claude Code worktree layouts or other path-based worktree conventions.
 
@@ -40,11 +40,17 @@ Read these fields from `worktree_info`:
 Require all of the following:
 
 - `branch` starts with `piw/`
-- `integration.remote === "origin"`
-- `integration.branch === "develop"`
+- `integration.remote` is present
+- `integration.branch` is present
 - `integration.createdFromTarget === true`
 
-If any check fails, stop and report that this worktree is not eligible for automated integration into `origin/develop`.
+Then define:
+
+- `<target-remote>` = `integration.remote`
+- `<target-branch>` = `integration.branch`
+- `<target-ref>` = `<target-remote>/<target-branch>`
+
+If any check fails, stop and report that this worktree is not eligible for automated integration into its recorded target branch.
 
 ## Step 3: Verify repository integration script
 
@@ -55,6 +61,8 @@ Require this script to exist:
 ```
 
 If it does not exist, report the missing path and stop.
+
+Assume the repository's integration script is compatible with the recorded target branch. If the repository uses a different integration policy, stop and explain the mismatch when it becomes apparent.
 
 ## Step 4: Check cleanliness
 
@@ -68,16 +76,16 @@ If the worktree is dirty:
    - untracked files from porcelain output
 2. Commit everything before continuing, following the workflow from the `my-commit-changes` skill
 
-## Step 5: Fetch and inspect commits ahead of develop
+## Step 5: Fetch and inspect commits ahead of the recorded target
 
 Run:
 
 ```bash
-git fetch origin develop
-git log origin/develop..HEAD --oneline
+git fetch <target-remote> <target-branch>
+git log <target-ref>..HEAD --oneline
 ```
 
-If there are no commits ahead of `origin/develop`, report `Nothing to integrate — no commits ahead of origin/develop.` and stop.
+If there are no commits ahead of `<target-ref>`, report `Nothing to integrate — no commits ahead of <target-ref>.` and stop.
 
 Show this summary:
 
@@ -87,17 +95,17 @@ Branch:    <branch>
 Path:      <path>
 Repo:      <repoRoot>
 Base:      <base.input>
-Target:    origin/develop
-Commits:   <N> ahead of origin/develop
+Target:    <target-ref>
+Commits:   <N> ahead of <target-ref>
 ```
 
-## Step 6: Rebase onto latest develop
+## Step 6: Rebase onto the latest recorded target
 
 Run automatically:
 
 ```bash
-git fetch origin develop
-git rebase origin/develop
+git fetch <target-remote> <target-branch>
+git rebase <target-ref>
 ```
 
 If rebase fails:
@@ -134,9 +142,10 @@ Show:
 - the list of integrated commits from Step 5
 - the repo path
 - the integrated branch
+- the recorded target branch
 - that the active `piw` worktree remains managed by `piw`
 - that this skill does **not** delete the active worktree or its branch
-- `develop is up to date on origin.`
+- `<target-branch> is up to date on <target-remote>.`
 
 ## Rules
 

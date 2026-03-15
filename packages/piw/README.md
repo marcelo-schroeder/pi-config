@@ -99,11 +99,14 @@ This metadata is used to make automation safer. For example, a skill can refuse 
 - If no safe target can be derived, the worktree still works normally, but metadata-backed integration workflows should treat it as incomplete.
 - Existing older worktrees that predate metadata remain reusable, but they are intentionally treated as metadata-incomplete.
 
-Recommended pattern for worktrees meant to land in `develop`:
+Examples:
 
 ```bash
 piw feature-auth --base develop --target develop
+piw feature-auth --base main --target main
 ```
+
+Use the target branch that the work is intended to land in.
 
 ## Private extension behavior
 
@@ -136,6 +139,7 @@ Skills that integrate a `piw` worktree should:
 - require the `worktree_info` tool
 - rely on `worktree_info` instead of filesystem-layout guesses or upstream tracking
 - use the real branch from `worktree_info` (for example `piw/feature-auth`)
+- rebase against the recorded integration target from `worktree_info.integration`
 - refuse integration when `metadataComplete` is false
 
 ## Development
