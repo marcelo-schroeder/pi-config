@@ -19,6 +19,7 @@ function createDefaultOptions() {
 		keepDirty: false,
 		deleteDirty: false,
 		yes: false,
+		skipHooks: false,
 		json: false,
 		debug: false,
 		piBin: null,
@@ -69,6 +70,9 @@ function parseRunArgs(args, options) {
 				break;
 			case "--yes":
 				options.yes = true;
+				break;
+			case "--skip-hooks":
+				options.skipHooks = true;
 				break;
 			case "--debug":
 				options.debug = true;
@@ -254,6 +258,7 @@ export function getHelpText() {
 		"  --keep-dirty        Keep a protected worktree after pi exits",
 		"  --delete-dirty      Delete a protected worktree after pi exits",
 		"  --yes               Skip confirmations required by delete flags",
+		"  --skip-hooks        Skip configured session hooks",
 		"  --pi-bin <path>     Override the pi executable (or use PIW_PI_BIN)",
 		"  --debug             Print extra wrapper diagnostics",
 		"",
@@ -263,6 +268,7 @@ export function getHelpText() {
 		"  - When --base is omitted, piw may create from origin/<target> instead of a diverged local branch.",
 		"  - Managed branches use the prefix 'piw/'.",
 		"  - Managed worktrees are stored beside the repo in '<repo>.worktrees/<name>'.",
+		"  - Hooks are configured via piw.config.json and/or .piw.local.json.",
 		"  - Extra pi arguments must come after '--'.",
 	].join("\n");
 }

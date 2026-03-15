@@ -2,7 +2,7 @@
 
 `piw` is a user-owned git worktree wrapper for `pi`.
 
-It creates or reuses a named worktree, launches `pi` inside it, injects worktree awareness through a private extension, persists small worktree metadata for automation, and cleans up disposable worktrees on exit.
+It creates or reuses a named worktree, launches `pi` inside it, injects worktree awareness through a private extension, persists small worktree metadata for automation, can run configurable session hooks, and cleans up disposable worktrees on exit.
 
 ## Layout
 
@@ -73,6 +73,7 @@ So the runtime worktree directories live **outside** the repo root.
 - `--keep-dirty`: keep a protected worktree after `pi` exits
 - `--delete-dirty`: delete a protected worktree after `pi` exits
 - `--yes`: skip confirmations needed by delete flags
+- `--skip-hooks`: skip configured session hooks
 - `--pi-bin <path>`: override the `pi` executable, useful for testing
 - `--debug`: print extra wrapper diagnostics
 
@@ -84,6 +85,99 @@ So the runtime worktree directories live **outside** the repo root.
 - if the worktree `HEAD` is already contained in either derived target ref, `piw` treats it as integrated for cleanup purposes
 - worktrees with uncommitted changes, commits not yet merged into either derived target ref, or unknown integration state still prompt whether to keep or delete unless you override that with flags
 - if `piw` cannot verify the recorded target safely, it keeps the worktree by default in non-interactive mode
+
+## Hook configuration
+
+`piw` supports repo-scoped session hooks.
+
+### Config files
+
+Two optional JSON files are supported:
+
+- `piw.config.json`: committed, shared hook config
+- `.piw.local.json`: untracked, machine-local hook config
+
+Both files are repo-root files.
+
+### Which checkout they come from
+
+Hook config is loaded from two places:
+
+- shared config (`piw.config.json`) is read from the **target session checkout root**
+- local config (`.piw.local.json`) is read from the **checkout root where `piw` was invoked**
+
+That split keeps shared hook behavior branch-aware while still allowing a machine-local setup file to affect newly created worktrees.
+
+For example, if you run `piw` from a main checkout that has `.piw.local.json`, that local config can run setup hooks for a newly created worktree even though the new worktree does not yet contain that untracked file.
+
+### Supported event
+
+Current supported hook event:
+
+- `session-setup`: runs after the worktree is created or reused and metadata is available, but before `pi` launches
+
+### Hook shape
+
+```json
+{
+  "hooks": {
+    "session-setup": [
+      {
+        "name": "setup-worktree",
+        "command": "./scripts/setup_worktree.sh",
+        "when": "create",
+        "onFailure": "abort"
+      }
+    ]
+  }
+}
+```
+
+Hook fields:
+
+- `name`: display name in `piw` output; defaults to the command when omitted
+- `command`: shell command to run from the target worktree root
+- `when`: `create`, `reuse`, or `always` (default: `always`)
+- `onFailure`: `abort` or `continue` (default: `abort`)
+
+Shared hooks run first, then local hooks.
+
+Hook commands run with:
+
+- `cwd` set to the target worktree root
+- inherited stdio
+- the usual `PI_WORKTREE_*` environment variables
+- additional hook env vars:
+  - `PIW_HOOK_EVENT`
+  - `PIW_HOOK_MODE`
+  - `PIW_HOOK_NAME`
+  - `PIW_HOOK_SOURCE_KIND`
+  - `PIW_HOOK_SOURCE_PATH`
+
+If a hook fails and `onFailure` is `abort`, `piw` stops before launching `pi` and leaves the worktree in place for inspection.
+
+Example machine-local config:
+
+```json
+{
+  "hooks": {
+    "session-setup": [
+      {
+        "name": "bootstrap-worktree",
+        "command": "./scripts/setup_worktree.sh",
+        "when": "create",
+        "onFailure": "abort"
+      }
+    ]
+  }
+}
+```
+
+A good place for that is:
+
+```text
+/path/to/repo/.piw.local.json
+```
 
 ## Persisted metadata
 

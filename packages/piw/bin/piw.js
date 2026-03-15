@@ -3,6 +3,7 @@
 import process from "node:process";
 import { parseArgs, getHelpText } from "../src/args.js";
 import { maybeCleanupRunWorktree, promptRemovalConfirmation } from "../src/cleanup.js";
+import { loadPiwHookConfig } from "../src/config.js";
 import {
 	getCurrentBranch,
 	getManagedWorktree,
@@ -14,6 +15,7 @@ import {
 	renameManagedWorktree,
 	removeManagedWorktree,
 } from "../src/git.js";
+import { runConfiguredHooks } from "../src/hooks.js";
 import { launchPiSession } from "../src/launch.js";
 import { buildManagedWorktreeMetadata, planManagedWorktreeCreation, readManagedWorktreeMetadata, writeManagedWorktreeMetadata } from "../src/metadata.js";
 import { generateFriendlyName, managedBranchName, normalizeName } from "../src/names.js";
@@ -198,6 +200,26 @@ async function handleRun(options) {
 	console.log(`${created ? "Created" : "Reusing"} worktree '${session.name}'.`);
 	console.log(`  path: ${session.path}`);
 	console.log(`  branch: ${session.branch}`);
+
+	if (!options.skipHooks) {
+		const hookConfig = await loadPiwHookConfig({
+			sharedConfigRoot: session.path,
+			localConfigRoot: repo.currentWorktreeRoot,
+		});
+		printDebug(options.debug, "hook shared config root", session.path);
+		printDebug(options.debug, "hook local config root", repo.currentWorktreeRoot);
+		printDebug(options.debug, "loaded hook config files", hookConfig.loadedFiles);
+		await runConfiguredHooks({
+			config: hookConfig,
+			event: "session-setup",
+			mode: created ? "create" : "reuse",
+			session,
+			originalCwd,
+			debug: options.debug,
+		});
+	} else {
+		printDebug(options.debug, "hooks", "skipped by --skip-hooks");
+	}
 
 	const exitCode = await launchPiSession({
 		session,

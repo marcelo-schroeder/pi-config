@@ -27,12 +27,7 @@ export function getWorktreeExtensionPath() {
 	return WORKTREE_EXTENSION_PATH;
 }
 
-export async function launchPiSession({ session, piArgs, piBin, originalCwd }) {
-	const resolvedPiBin = piBin || process.env.PIW_PI_BIN || "pi";
-	const launchArgs = hasExplicitExtension(piArgs, WORKTREE_EXTENSION_PATH)
-		? [...piArgs]
-		: ["--extension", WORKTREE_EXTENSION_PATH, ...piArgs];
-
+export function buildWorktreeChildEnv({ session, originalCwd, extraEnv = {} }) {
 	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_WORKTREE_")));
 	env.PI_WORKTREE_SESSION = "1";
 	env.PI_WORKTREE_NAME = session.name;
@@ -44,6 +39,19 @@ export async function launchPiSession({ session, piArgs, piBin, originalCwd }) {
 	if (session.metadata) {
 		env.PI_WORKTREE_METADATA_JSON = JSON.stringify(session.metadata);
 	}
+
+	return {
+		...env,
+		...extraEnv,
+	};
+}
+
+export async function launchPiSession({ session, piArgs, piBin, originalCwd }) {
+	const resolvedPiBin = piBin || process.env.PIW_PI_BIN || "pi";
+	const launchArgs = hasExplicitExtension(piArgs, WORKTREE_EXTENSION_PATH)
+		? [...piArgs]
+		: ["--extension", WORKTREE_EXTENSION_PATH, ...piArgs];
+	const env = buildWorktreeChildEnv({ session, originalCwd });
 
 	return await new Promise((resolve, reject) => {
 		const child = spawn(resolvedPiBin, launchArgs, {
