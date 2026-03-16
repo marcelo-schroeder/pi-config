@@ -75,8 +75,13 @@ export default function questionnaire(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
-		description:
-			"Ask the user one or more questions. Use for clarifying requirements, getting preferences, or confirming decisions. For single questions, shows a simple option list. For multiple questions, shows a tab-based interface.",
+		description: "Ask structured clarification questions in interactive mode.",
+		promptSnippet: "Ask structured clarification questions with options",
+		promptGuidelines: [
+			"Use for short, concrete clarifications, preferences, or confirmations.",
+			"Prefer when options are clear; use normal chat for open-ended questions.",
+			"Only use if the answer changes the result and UI is available.",
+		],
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
