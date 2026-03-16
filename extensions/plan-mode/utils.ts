@@ -149,20 +149,46 @@ export function extractTodoItems(message: string): TodoItem[] {
 	return items;
 }
 
+export function normalizeStepNumbers(steps: number[]): number[] {
+	const normalized: number[] = [];
+	const seen = new Set<number>();
+
+	for (const value of steps) {
+		const step = Number(value);
+		if (!Number.isInteger(step) || step <= 0 || seen.has(step)) continue;
+		seen.add(step);
+		normalized.push(step);
+	}
+
+	return normalized;
+}
+
 export function extractDoneSteps(message: string): number[] {
 	const steps: number[] = [];
-	for (const match of message.matchAll(/\[DONE:(\d+)\]/gi)) {
-		const step = Number(match[1]);
-		if (Number.isFinite(step)) steps.push(step);
+	for (const match of message.matchAll(/\[DONE(?:\s*:\s*|\s+)([0-9,\s]+)\]/gi)) {
+		const rawSteps = match[1] ?? "";
+		for (const token of rawSteps.split(/[\s,]+/)) {
+			if (!token) continue;
+			const step = Number(token);
+			if (Number.isFinite(step)) {
+				steps.push(step);
+			}
+		}
 	}
-	return steps;
+	return normalizeStepNumbers(steps);
+}
+
+export function applyCompletedSteps(steps: number[], items: TodoItem[]): number[] {
+	const applied: number[] = [];
+	for (const step of normalizeStepNumbers(steps)) {
+		const item = items.find((t) => t.step === step);
+		if (!item || item.completed) continue;
+		item.completed = true;
+		applied.push(step);
+	}
+	return applied;
 }
 
 export function markCompletedSteps(text: string, items: TodoItem[]): number {
-	const doneSteps = extractDoneSteps(text);
-	for (const step of doneSteps) {
-		const item = items.find((t) => t.step === step);
-		if (item) item.completed = true;
-	}
-	return doneSteps.length;
+	return applyCompletedSteps(extractDoneSteps(text), items).length;
 }

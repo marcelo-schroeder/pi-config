@@ -1,6 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Key } from "@mariozechner/pi-tui";
-import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.js";
+import { Type } from "@sinclair/typebox";
+import {
+	applyCompletedSteps,
+	extractDoneSteps,
+	extractTodoItems,
+	isSafeCommand,
+	normalizeStepNumbers,
+	type TodoItem,
+} from "./utils.js";
 
 const BASE_PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "worktree_info"] as const;
 const OPTIONAL_PLAN_MODE_TOOLS = ["web_fetch"] as const;
@@ -8,7 +16,27 @@ const PLAN_MODE_CONTEXT_TYPE = "plan-mode-context";
 const PLAN_EXECUTION_CONTEXT_TYPE = "plan-execution-context";
 const PLAN_EXECUTE_MESSAGE_TYPE = "plan-mode-execute";
 const PLAN_MODE_STATE_TYPE = "plan-mode";
+const PLAN_TODO_LIST_MESSAGE_TYPE = "plan-todo-list";
+const PLAN_PROGRESS_MESSAGE_TYPE = "plan-progress-update";
+const PLAN_COMPLETE_MESSAGE_TYPE = "plan-complete";
+const PLAN_STEP_DONE_TOOL = "plan_step_done";
 const MODE_STATE_EVENT = "pi-config:mode-state";
+const UI_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
+	PLAN_TODO_LIST_MESSAGE_TYPE,
+	PLAN_PROGRESS_MESSAGE_TYPE,
+	PLAN_COMPLETE_MESSAGE_TYPE,
+]);
+
+const PlanStepDoneParams = Type.Object({
+	step: Type.Optional(Type.Integer({ description: "Single completed plan step number", minimum: 1 })),
+	steps: Type.Optional(
+		Type.Array(Type.Integer({ description: "Completed plan step number", minimum: 1 }), {
+			description: "One or more completed plan step numbers",
+			minItems: 1,
+		}),
+	),
+	note: Type.Optional(Type.String({ description: "Optional short note about what was completed" })),
+});
 
 interface PersistedPlanModeState {
 	enabled?: boolean;
@@ -31,6 +59,22 @@ interface AssistantMessageLike {
 	content: Array<{ type?: string; text?: string }>;
 }
 
+interface ToolResultMessageLike {
+	role: string;
+	toolName?: string;
+	details?: unknown;
+}
+
+interface PlanStepDoneDetails {
+	completedSteps?: number[];
+	alreadyCompletedSteps?: number[];
+	invalidSteps?: number[];
+	totalCompleted?: number;
+	totalSteps?: number;
+	note?: string | null;
+	error?: string;
+}
+
 interface ModeStateEvent {
 	mode?: string;
 	active?: boolean;
@@ -38,7 +82,16 @@ interface ModeStateEvent {
 }
 
 function isAssistantMessage(message: unknown): message is AssistantMessageLike {
-	return !!message && typeof message === "object" && (message as { role?: string }).role === "assistant" && Array.isArray((message as { content?: unknown }).content);
+	return (
+		!!message &&
+		typeof message === "object" &&
+		(message as { role?: string }).role === "assistant" &&
+		Array.isArray((message as { content?: unknown }).content)
+	);
+}
+
+function isToolResultMessage(message: unknown): message is ToolResultMessageLike {
+	return !!message && typeof message === "object" && (message as { role?: string }).role === "toolResult";
 }
 
 function getTextContent(message: AssistantMessageLike): string {
@@ -62,6 +115,12 @@ function getLatestPlanTodoItems(entries: SessionEntryLike[]): TodoItem[] {
 	return [];
 }
 
+function getPlanStepDoneSteps(message: unknown): number[] {
+	if (!isToolResultMessage(message) || message.toolName !== PLAN_STEP_DONE_TOOL) return [];
+	const details = message.details as PlanStepDoneDetails | undefined;
+	return normalizeStepNumbers(Array.isArray(details?.completedSteps) ? details.completedSteps : []);
+}
+
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let currentCtx: ExtensionContext | undefined;
 	let planModeEnabled = false;
@@ -72,6 +131,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let executionTools: string[] | null = null;
 	let readOnlyModeActive = false;
 	let readOnlyModeRestoreTools: string[] | null = null;
+	let pendingProgressSteps: number[] = [];
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration)",
@@ -89,6 +149,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return [...new Set(names.filter((name) => available.has(name)))];
 	}
 
+	function getSessionBranchEntries(ctx?: ExtensionContext): SessionEntryLike[] {
+		const activeCtx = ctx ?? currentCtx;
+		if (!activeCtx) return [];
+		return activeCtx.sessionManager.getBranch() as SessionEntryLike[];
+	}
+
 	function getCurrentActiveTools(): string[] {
 		return [...new Set(pi.getActiveTools())];
 	}
@@ -98,6 +164,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const requiredTools = BASE_PLAN_MODE_TOOLS.filter((name) => available.has(name));
 		const optionalTools = OPTIONAL_PLAN_MODE_TOOLS.filter((name) => available.has(name));
 		return [...requiredTools, ...optionalTools];
+	}
+
+	function getExecutionModeTools(): string[] {
+		const normalizedExecutionTools = sanitizeToolNames(executionTools);
+		const normalizedRestoreTools = sanitizeToolNames(restoreTools);
+		const baseTools = normalizedExecutionTools.length > 0 ? normalizedExecutionTools : normalizedRestoreTools;
+		if (executionMode && hasTrackedTodoItems()) {
+			return sanitizeToolNames([...baseTools, PLAN_STEP_DONE_TOOL]);
+		}
+		return baseTools;
 	}
 
 	function hasOptionalWebFetch(): boolean {
@@ -112,9 +188,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	function applyExecutionTools(): void {
-		const normalizedExecutionTools = sanitizeToolNames(executionTools);
-		if (normalizedExecutionTools.length > 0) {
-			pi.setActiveTools(normalizedExecutionTools);
+		const nextTools = getExecutionModeTools();
+		if (nextTools.length > 0) {
+			pi.setActiveTools(nextTools);
 			return;
 		}
 		applyRestoreTools();
@@ -124,20 +200,32 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return todoTrackingEnabled && todoItems.length > 0;
 	}
 
+	function clearPendingProgressSteps(): void {
+		pendingProgressSteps = [];
+	}
+
 	function resetTodoTracking(): void {
 		todoTrackingEnabled = false;
 		todoItems = [];
+		clearPendingProgressSteps();
 	}
 
 	function getTrackedPlanItemsFromSession(ctx?: ExtensionContext): TodoItem[] {
-		const activeCtx = ctx ?? currentCtx;
-		if (!activeCtx) return [];
-		const entries = activeCtx.sessionManager.getEntries() as SessionEntryLike[];
-		return getLatestPlanTodoItems(entries);
+		return getLatestPlanTodoItems(getSessionBranchEntries(ctx));
+	}
+
+	function getCompletedTodoCount(items: TodoItem[] = todoItems): number {
+		return items.filter((item) => item.completed).length;
 	}
 
 	function formatTodoList(items: TodoItem[]): string {
 		return items.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n");
+	}
+
+	function formatTodoChecklist(items: TodoItem[]): string {
+		return items
+			.map((item, i) => `${i + 1}. ${item.completed ? `~~${item.text}~~` : `☐ ${item.text}`}`)
+			.join("\n");
 	}
 
 	function parseTodosCommand(args: string | undefined): "show" | "on" | "off" | null {
@@ -148,14 +236,80 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return null;
 	}
 
+	function queueProgressSteps(steps: number[]): void {
+		const seen = new Set(pendingProgressSteps);
+		for (const step of normalizeStepNumbers(steps)) {
+			if (seen.has(step)) continue;
+			pendingProgressSteps.push(step);
+			seen.add(step);
+		}
+	}
+
+	function emitProgressUpdateMessage(steps: number[]): void {
+		if (!hasTrackedTodoItems()) return;
+		const completed = getCompletedTodoCount();
+		const stepSummary =
+			steps.length === 1 ? `Completed step ${steps[0]}.` : `Completed steps ${steps.join(", ")}.`;
+		pi.sendMessage(
+			{
+				customType: PLAN_PROGRESS_MESSAGE_TYPE,
+				content: `**Plan Progress (${completed}/${todoItems.length} complete)**\n\n${stepSummary}\n\n${formatTodoChecklist(todoItems)}`,
+				display: true,
+			},
+			{ triggerTurn: false },
+		);
+	}
+
+	function markTrackedStepsCompleted(
+		steps: number[],
+		options?: { ctx?: ExtensionContext; persist?: boolean; queueProgress?: boolean },
+	): number[] {
+		if (!todoTrackingEnabled || todoItems.length === 0) return [];
+
+		const completedNow = applyCompletedSteps(steps, todoItems);
+		if (completedNow.length === 0) return [];
+
+		if (options?.queueProgress !== false) {
+			queueProgressSteps(completedNow);
+		}
+		updateStatus(options?.ctx);
+		if (options?.persist !== false) {
+			persistState();
+		}
+		return completedNow;
+	}
+
+	function collectCompletionStepsSinceExecution(entries: SessionEntryLike[]): number[] {
+		let executeIndex = -1;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			if (entries[i].customType === PLAN_EXECUTE_MESSAGE_TYPE) {
+				executeIndex = i;
+				break;
+			}
+		}
+
+		const completionSteps: number[] = [];
+		for (let i = executeIndex + 1; i < entries.length; i++) {
+			const message = entries[i]?.message;
+			completionSteps.push(...getPlanStepDoneSteps(message));
+			if (isAssistantMessage(message)) {
+				completionSteps.push(...extractDoneSteps(getTextContent(message)));
+			}
+		}
+
+		return normalizeStepNumbers(completionSteps);
+	}
+
 	function updateStatus(ctx?: ExtensionContext): void {
 		const activeCtx = ctx ?? currentCtx;
 		if (!activeCtx?.hasUI) return;
 
 		const trackedExecutionActive = executionMode && hasTrackedTodoItems();
 		if (trackedExecutionActive) {
-			const completed = todoItems.filter((item) => item.completed).length;
-			activeCtx.ui.setStatus("plan-mode", activeCtx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
+			activeCtx.ui.setStatus(
+				"plan-mode",
+				activeCtx.ui.theme.fg("accent", `📋 ${getCompletedTodoCount()}/${todoItems.length}`),
+			);
 		} else if (planModeEnabled) {
 			activeCtx.ui.setStatus("plan-mode", activeCtx.ui.theme.fg("warning", "⏸ plan"));
 		} else {
@@ -252,6 +406,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	function startExecution(ctx?: ExtensionContext): void {
 		planModeEnabled = false;
 		executionMode = hasTrackedTodoItems();
+		clearPendingProgressSteps();
 		if (!executionMode) {
 			resetTodoTracking();
 		}
@@ -283,8 +438,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		todoItems = [];
 		restoreTools = null;
 		executionTools = null;
+		clearPendingProgressSteps();
 
-		const entries = ctx.sessionManager.getEntries() as SessionEntryLike[];
+		const entries = getSessionBranchEntries(ctx);
 		const planModeEntry = entries
 			.filter((entry) => entry.type === "custom" && entry.customType === PLAN_MODE_STATE_TYPE)
 			.pop() as SessionEntryLike | undefined;
@@ -323,35 +479,87 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			executionTools = sanitizeToolNames(restoreTools);
 		}
 
+		if (executionMode && hasTrackedTodoItems()) {
+			markTrackedStepsCompleted(collectCompletionStepsSinceExecution(entries), {
+				ctx,
+				persist: false,
+				queueProgress: false,
+			});
+		}
+
 		if (planModeEnabled) {
 			pi.setActiveTools(getPlanModeTools());
 		} else if (executionMode) {
 			applyExecutionTools();
 		}
 
-		if (executionMode && hasTrackedTodoItems()) {
-			let executeIndex = -1;
-			for (let i = entries.length - 1; i >= 0; i--) {
-				if (entries[i].customType === PLAN_EXECUTE_MESSAGE_TYPE) {
-					executeIndex = i;
-					break;
-				}
-			}
-
-			const messages: AssistantMessageLike[] = [];
-			for (let i = executeIndex + 1; i < entries.length; i++) {
-				const message = entries[i]?.message;
-				if (isAssistantMessage(message)) {
-					messages.push(message);
-				}
-			}
-			const allText = messages.map(getTextContent).join("\n");
-			markCompletedSteps(allText, todoItems);
-		}
-
 		updateStatus(ctx);
 		emitModeState();
 	}
+
+	pi.registerTool({
+		name: PLAN_STEP_DONE_TOOL,
+		label: "Plan Step Done",
+		description: "Mark one or more tracked plan steps complete during tracked plan execution.",
+		promptSnippet: "Mark tracked plan step(s) complete during tracked plan execution",
+		promptGuidelines: [
+			"Only use this during tracked plan execution.",
+			"Call it immediately when you complete a tracked step, instead of relying on prose-only progress markers.",
+			"Use the exact tracked step numbers from the current plan.",
+		],
+		parameters: PlanStepDoneParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const toolCtx = ctx as ExtensionContext;
+			currentCtx = toolCtx;
+			if (!executionMode || !hasTrackedTodoItems()) {
+				return {
+					content: [{ type: "text", text: "Plan step tracking is not active right now." }],
+					details: { error: "tracking not active" } satisfies PlanStepDoneDetails,
+				};
+			}
+
+			const requestedSteps = normalizeStepNumbers([
+				...(params.step !== undefined ? [params.step] : []),
+				...(params.steps ?? []),
+			]);
+			if (requestedSteps.length === 0) {
+				return {
+					content: [{ type: "text", text: "No plan step numbers were provided." }],
+					details: { error: "no step numbers provided" } satisfies PlanStepDoneDetails,
+				};
+			}
+
+			const validStepSet = new Set(todoItems.map((item) => item.step));
+			const completedBefore = new Set(todoItems.filter((item) => item.completed).map((item) => item.step));
+			const invalidSteps = requestedSteps.filter((step) => !validStepSet.has(step));
+			const validSteps = requestedSteps.filter((step) => validStepSet.has(step));
+			const completedSteps = markTrackedStepsCompleted(validSteps, { ctx: toolCtx });
+			const alreadyCompletedSteps = validSteps.filter((step) => completedBefore.has(step));
+			const totalCompleted = getCompletedTodoCount();
+			const noteSuffix = params.note?.trim() ? ` Note: ${params.note.trim()}` : "";
+
+			let text = "No tracked plan steps changed.";
+			if (completedSteps.length > 0) {
+				text = `Marked plan step${completedSteps.length === 1 ? "" : "s"} ${completedSteps.join(", ")} complete (${totalCompleted}/${todoItems.length}).${noteSuffix}`;
+			} else if (alreadyCompletedSteps.length > 0 && invalidSteps.length === 0) {
+				text = `Plan step${alreadyCompletedSteps.length === 1 ? "" : "s"} ${alreadyCompletedSteps.join(", ")} ${alreadyCompletedSteps.length === 1 ? "is" : "are"} already complete (${totalCompleted}/${todoItems.length}).${noteSuffix}`;
+			} else if (invalidSteps.length > 0) {
+				text = `Ignored invalid plan step${invalidSteps.length === 1 ? "" : "s"} ${invalidSteps.join(", ")} (${totalCompleted}/${todoItems.length}).${noteSuffix}`;
+			}
+
+			return {
+				content: [{ type: "text", text }],
+				details: {
+					completedSteps,
+					alreadyCompletedSteps,
+					invalidSteps,
+					totalCompleted,
+					totalSteps: todoItems.length,
+					note: params.note?.trim() || null,
+				} satisfies PlanStepDoneDetails,
+			};
+		},
+	});
 
 	pi.events.on(MODE_STATE_EVENT, (data) => {
 		const event = data as ModeStateEvent;
@@ -417,6 +625,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				const wasTrackedExecution = executionMode && hasTrackedTodoItems();
 				executionMode = false;
 				resetTodoTracking();
+				if (!planModeEnabled) {
+					applyExecutionTools();
+				}
 				updateStatus(ctx);
 				persistState();
 				emitModeState();
@@ -490,6 +701,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			messages: event.messages.filter((message) => {
 				const msg = message as { customType?: string; role?: string; content?: unknown };
 
+				if (msg.customType && UI_ONLY_CUSTOM_MESSAGE_TYPES.has(msg.customType)) return false;
 				if (!planModeEnabled && msg.customType === PLAN_MODE_CONTEXT_TYPE) return false;
 				if (!executionMode && msg.customType === PLAN_EXECUTION_CONTEXT_TYPE) return false;
 
@@ -540,6 +752,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const webResearchLine = hasOptionalWebFetch()
 				? "- Use web_fetch when you need external web research or documentation lookup.\n"
 				: "";
+			const trackingLine = todoTrackingEnabled
+				? "- Task tracking is enabled for this plan. Keep numbered steps stable so they can be tracked later.\n"
+				: "";
 			return {
 				message: {
 					customType: PLAN_MODE_CONTEXT_TYPE,
@@ -553,7 +768,7 @@ Restrictions:
 
 Guidance:
 - Ask clarifying questions with the questionnaire tool when needed.
-${webResearchLine}- Inspect the codebase, gather evidence, and think through tradeoffs.
+${webResearchLine}${trackingLine}- Inspect the codebase, gather evidence, and think through tradeoffs.
 - Create a detailed numbered plan under a "Plan:" header.
 
 Plan:
@@ -579,7 +794,9 @@ Remaining steps:
 ${todoList}
 
 Execute each step in order.
-After completing a step, include a [DONE:n] tag in your response.`,
+When you finish a tracked step, call ${PLAN_STEP_DONE_TOOL} immediately with the completed step number.
+If you complete multiple tracked steps together, you may mark them in one call.
+Do not rely on prose-only progress updates.`,
 					display: false,
 				},
 			};
@@ -588,13 +805,22 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 	pi.on("turn_end", async (event, ctx) => {
 		currentCtx = ctx;
-		if (!executionMode || !hasTrackedTodoItems()) return;
-		if (!isAssistantMessage(event.message)) return;
+		if (!executionMode || !hasTrackedTodoItems()) {
+			clearPendingProgressSteps();
+			return;
+		}
 
-		const text = getTextContent(event.message);
-		if (markCompletedSteps(text, todoItems) > 0) {
-			updateStatus(ctx);
-			persistState();
+		if (isAssistantMessage(event.message)) {
+			const doneSteps = extractDoneSteps(getTextContent(event.message));
+			if (doneSteps.length > 0) {
+				markTrackedStepsCompleted(doneSteps, { ctx });
+			}
+		}
+
+		const completedThisTurn = [...pendingProgressSteps];
+		clearPendingProgressSteps();
+		if (completedThisTurn.length > 0 && !todoItems.every((item) => item.completed)) {
+			emitProgressUpdateMessage(completedThisTurn);
 		}
 	});
 
@@ -604,7 +830,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 			if (todoItems.every((item) => item.completed)) {
 				const completedList = todoItems.map((item) => `~~${item.text}~~`).join("\n");
 				pi.sendMessage(
-					{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
+					{ customType: PLAN_COMPLETE_MESSAGE_TYPE, content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
 					{ triggerTurn: false },
 				);
 				completeExecution(ctx);
@@ -626,11 +852,10 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		}
 
 		if (todoTrackingEnabled && todoItems.length > 0) {
-			const todoListText = todoItems.map((item, i) => `${i + 1}. ☐ ${item.text}`).join("\n");
 			pi.sendMessage(
 				{
-					customType: "plan-todo-list",
-					content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
+					customType: PLAN_TODO_LIST_MESSAGE_TYPE,
+					content: `**Plan Steps (${todoItems.length}):**\n\n${formatTodoChecklist(todoItems)}`,
 					display: true,
 				},
 				{ triggerTurn: false },

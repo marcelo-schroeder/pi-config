@@ -7,8 +7,10 @@ Read-only exploration mode for safe code analysis.
 - **Read-only tools**: Restricts available tools to `read`, `bash`, `grep`, `find`, `ls`, `questionnaire`, `worktree_info`, and optionally `web_fetch`
 - **Bash allowlist**: Only read-only bash commands are allowed
 - **Optional task tracking**: Numbered `Plan:` steps can be tracked, but tracking is off by default and only turns on when you explicitly ask for it
+- **Structured step completion**: Tracked execution uses the `plan_step_done` tool so progress does not depend only on exact prose markers
+- **Legacy `[DONE:n]` fallback**: Older or prose-based completions are still recognized with tolerant parsing for compatibility
 - **Progress tracking widget**: Shows completion status only during tracked execution
-- **[DONE:n] markers**: Used only when task tracking is enabled
+- **Transcript progress updates**: Tracked execution emits visible progress updates in the session transcript as steps are completed
 - **Session persistence**: State survives session resume, switch, and fork
 - **Tool restoration**: Restores the previously active non-mode tool set after leaving plan mode
 - **Mode coexistence**: Cooperates with other mode-style extensions via the event bus without requiring them
@@ -39,8 +41,9 @@ Plan:
 5. Choose **Execute the plan** when prompted
 6. Only when task tracking is enabled:
    - the plan steps are captured into a tracked todo list
-   - execution includes `[DONE:n]` progress markers
-   - the progress widget shows completion status
+   - execution uses the `plan_step_done` tool to mark tracked steps complete
+   - progress appears in the widget/footer and in transcript updates as tracked steps complete
+   - legacy `[DONE:n]` markers are still accepted as fallback
 7. If you do not enable task tracking, plan mode still works normally without todo/task UI
 
 ## Interoperability
