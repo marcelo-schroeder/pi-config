@@ -2,17 +2,20 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { Key } from "@mariozechner/pi-tui";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.js";
 
-const BASE_PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"] as const;
+const BASE_PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "worktree_info"] as const;
 const OPTIONAL_PLAN_MODE_TOOLS = ["web_fetch"] as const;
 const PLAN_MODE_CONTEXT_TYPE = "plan-mode-context";
 const PLAN_EXECUTION_CONTEXT_TYPE = "plan-execution-context";
 const PLAN_EXECUTE_MESSAGE_TYPE = "plan-mode-execute";
+const PLAN_MODE_STATE_TYPE = "plan-mode";
+const MODE_STATE_EVENT = "pi-config:mode-state";
 
 interface PersistedPlanModeState {
 	enabled?: boolean;
 	executing?: boolean;
 	todos?: TodoItem[];
 	restoreTools?: string[] | null;
+	executionTools?: string[] | null;
 }
 
 interface SessionEntryLike {
@@ -27,6 +30,12 @@ interface AssistantMessageLike {
 	content: Array<{ type?: string; text?: string }>;
 }
 
+interface ModeStateEvent {
+	mode?: string;
+	active?: boolean;
+	restoreTools?: string[] | null;
+}
+
 function isAssistantMessage(message: unknown): message is AssistantMessageLike {
 	return !!message && typeof message === "object" && (message as { role?: string }).role === "assistant" && Array.isArray((message as { content?: unknown }).content);
 }
@@ -39,10 +48,14 @@ function getTextContent(message: AssistantMessageLike): string {
 }
 
 export default function planModeExtension(pi: ExtensionAPI): void {
+	let currentCtx: ExtensionContext | undefined;
 	let planModeEnabled = false;
 	let executionMode = false;
 	let todoItems: TodoItem[] = [];
 	let restoreTools: string[] | null = null;
+	let executionTools: string[] | null = null;
+	let readOnlyModeActive = false;
+	let readOnlyModeRestoreTools: string[] | null = null;
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration)",
@@ -82,82 +95,218 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function persistState(): void {
-		pi.appendEntry("plan-mode", {
-			enabled: planModeEnabled,
-			executing: executionMode,
-			todos: todoItems,
-			restoreTools,
-		});
+	function applyExecutionTools(): void {
+		const normalizedExecutionTools = sanitizeToolNames(executionTools);
+		if (normalizedExecutionTools.length > 0) {
+			pi.setActiveTools(normalizedExecutionTools);
+			return;
+		}
+		applyRestoreTools();
 	}
 
-	function updateStatus(ctx: ExtensionContext): void {
-		if (!ctx.hasUI) return;
+	function updateStatus(ctx?: ExtensionContext): void {
+		const activeCtx = ctx ?? currentCtx;
+		if (!activeCtx?.hasUI) return;
 
 		if (executionMode && todoItems.length > 0) {
 			const completed = todoItems.filter((item) => item.completed).length;
-			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
+			activeCtx.ui.setStatus("plan-mode", activeCtx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
 		} else if (planModeEnabled) {
-			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "⏸ plan"));
+			activeCtx.ui.setStatus("plan-mode", activeCtx.ui.theme.fg("warning", "⏸ plan"));
 		} else {
-			ctx.ui.setStatus("plan-mode", undefined);
+			activeCtx.ui.setStatus("plan-mode", undefined);
 		}
 
 		if (executionMode && todoItems.length > 0) {
 			const lines = todoItems.map((item) => {
 				if (item.completed) {
-					return ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text));
+					return activeCtx.ui.theme.fg("success", "☑ ") + activeCtx.ui.theme.fg("muted", activeCtx.ui.theme.strikethrough(item.text));
 				}
-				return `${ctx.ui.theme.fg("muted", "☐ ")}${item.text}`;
+				return `${activeCtx.ui.theme.fg("muted", "☐ ")}${item.text}`;
 			});
-			ctx.ui.setWidget("plan-todos", lines);
+			activeCtx.ui.setWidget("plan-todos", lines);
 		} else {
-			ctx.ui.setWidget("plan-todos", undefined);
+			activeCtx.ui.setWidget("plan-todos", undefined);
 		}
 	}
 
-	function enablePlanMode(ctx: ExtensionContext): void {
-		restoreTools = sanitizeToolNames(getCurrentActiveTools());
+	function notify(ctx: ExtensionContext | undefined, message: string): void {
+		if (ctx?.hasUI) {
+			ctx.ui.notify(message, "info");
+		}
+	}
+
+	function persistState(): void {
+		pi.appendEntry(PLAN_MODE_STATE_TYPE, {
+			enabled: planModeEnabled,
+			executing: executionMode,
+			todos: todoItems,
+			restoreTools,
+			executionTools,
+		});
+	}
+
+	function emitModeState(): void {
+		pi.events.emit(MODE_STATE_EVENT, {
+			mode: "plan",
+			active: planModeEnabled || executionMode,
+			restoreTools: sanitizeToolNames(restoreTools),
+		});
+	}
+
+	function getUnderlyingRestoreTools(): string[] {
+		const peerRestoreTools = sanitizeToolNames(readOnlyModeRestoreTools);
+		if (readOnlyModeActive && peerRestoreTools.length > 0) {
+			return peerRestoreTools;
+		}
+		return sanitizeToolNames(getCurrentActiveTools());
+	}
+
+	function enablePlanMode(ctx?: ExtensionContext, options?: { silent?: boolean }): void {
+		const uiCtx = ctx ?? currentCtx;
+		const baseRestoreTools = getUnderlyingRestoreTools();
+		if (baseRestoreTools.length > 0) {
+			restoreTools = baseRestoreTools;
+			executionTools = baseRestoreTools;
+		}
+
 		planModeEnabled = true;
 		executionMode = false;
 		todoItems = [];
 		pi.setActiveTools(getPlanModeTools());
-		updateStatus(ctx);
+		updateStatus(uiCtx);
 		persistState();
+		emitModeState();
 
-		const toolList = getPlanModeTools().join(", ");
-		ctx.ui.notify(`Plan mode enabled. Tools: ${toolList}`, "info");
+		if (!options?.silent) {
+			notify(uiCtx, `Plan mode enabled. Tools: ${getPlanModeTools().join(", ")}`);
+		}
 	}
 
-	function disablePlanWorkflow(ctx: ExtensionContext, message = "Plan mode disabled. Previous tool set restored."): void {
+	function disablePlanWorkflow(
+		ctx?: ExtensionContext,
+		options?: { silent?: boolean; restoreToolsOnExit?: boolean; message?: string },
+	): void {
+		const uiCtx = ctx ?? currentCtx;
 		planModeEnabled = false;
 		executionMode = false;
 		todoItems = [];
-		applyRestoreTools();
-		updateStatus(ctx);
+		if (options?.restoreToolsOnExit !== false) {
+			applyRestoreTools();
+		}
+		updateStatus(uiCtx);
 		persistState();
-		ctx.ui.notify(message, "info");
+		emitModeState();
+
+		if (!options?.silent) {
+			notify(uiCtx, options?.message ?? "Plan mode disabled. Previous tool set restored.");
+		}
 	}
 
-	function startExecution(ctx: ExtensionContext): void {
+	function startExecution(ctx?: ExtensionContext): void {
 		planModeEnabled = false;
 		executionMode = todoItems.length > 0;
-		applyRestoreTools();
+		applyExecutionTools();
 		updateStatus(ctx);
 		persistState();
+		emitModeState();
 	}
 
-	function completeExecution(ctx: ExtensionContext): void {
+	function completeExecution(ctx?: ExtensionContext): void {
 		executionMode = false;
 		todoItems = [];
 		applyRestoreTools();
 		updateStatus(ctx);
 		persistState();
+		emitModeState();
 	}
+
+	function resetPeerState(): void {
+		readOnlyModeActive = false;
+		readOnlyModeRestoreTools = null;
+	}
+
+	async function syncStateFromSession(ctx: ExtensionContext): Promise<void> {
+		currentCtx = ctx;
+		planModeEnabled = false;
+		executionMode = false;
+		todoItems = [];
+		restoreTools = null;
+		executionTools = null;
+
+		const entries = ctx.sessionManager.getEntries() as SessionEntryLike[];
+		const planModeEntry = entries
+			.filter((entry) => entry.type === "custom" && entry.customType === PLAN_MODE_STATE_TYPE)
+			.pop() as SessionEntryLike | undefined;
+		const persisted = planModeEntry?.data;
+
+		if (persisted) {
+			planModeEnabled = persisted.enabled ?? false;
+			executionMode = persisted.executing ?? false;
+			todoItems = persisted.todos ?? [];
+			restoreTools = sanitizeToolNames(persisted.restoreTools ?? null);
+			executionTools = sanitizeToolNames(persisted.executionTools ?? null);
+		}
+
+		if (pi.getFlag("plan") === true) {
+			planModeEnabled = true;
+			executionMode = false;
+			todoItems = [];
+		}
+
+		if (!restoreTools || restoreTools.length === 0) {
+			restoreTools = getUnderlyingRestoreTools();
+		}
+		if (!executionTools || executionTools.length === 0) {
+			executionTools = sanitizeToolNames(restoreTools);
+		}
+
+		if (planModeEnabled) {
+			pi.setActiveTools(getPlanModeTools());
+		} else if (executionMode) {
+			applyExecutionTools();
+		}
+
+		if (executionMode && todoItems.length > 0) {
+			let executeIndex = -1;
+			for (let i = entries.length - 1; i >= 0; i--) {
+				if (entries[i].customType === PLAN_EXECUTE_MESSAGE_TYPE) {
+					executeIndex = i;
+					break;
+				}
+			}
+
+			const messages: AssistantMessageLike[] = [];
+			for (let i = executeIndex + 1; i < entries.length; i++) {
+				const message = entries[i]?.message;
+				if (isAssistantMessage(message)) {
+					messages.push(message);
+				}
+			}
+			const allText = messages.map(getTextContent).join("\n");
+			markCompletedSteps(allText, todoItems);
+		}
+
+		updateStatus(ctx);
+		emitModeState();
+	}
+
+	pi.events.on(MODE_STATE_EVENT, (data) => {
+		const event = data as ModeStateEvent;
+		if (event.mode !== "read-only") return;
+
+		readOnlyModeActive = event.active === true;
+		readOnlyModeRestoreTools = sanitizeToolNames(event.restoreTools ?? null);
+
+		if (readOnlyModeActive && (planModeEnabled || executionMode)) {
+			disablePlanWorkflow(undefined, { silent: true, restoreToolsOnExit: false });
+		}
+	});
 
 	pi.registerCommand("plan", {
 		description: "Toggle plan mode (read-only exploration)",
 		handler: async (_args, ctx) => {
+			currentCtx = ctx;
 			if (planModeEnabled || executionMode) {
 				disablePlanWorkflow(ctx);
 				return;
@@ -169,6 +318,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("todos", {
 		description: "Show current plan todo list",
 		handler: async (_args, ctx) => {
+			currentCtx = ctx;
 			if (todoItems.length === 0) {
 				ctx.ui.notify("No tracked plan items yet. Generate a plan first with /plan.", "info");
 				return;
@@ -181,6 +331,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerShortcut(Key.ctrlAlt("p"), {
 		description: "Toggle plan mode",
 		handler: async (ctx) => {
+			currentCtx = ctx;
 			if (planModeEnabled || executionMode) {
 				disablePlanWorkflow(ctx);
 				return;
@@ -190,7 +341,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event) => {
-		if (!planModeEnabled || event.toolName !== "bash") return;
+		if (!planModeEnabled) return;
+
+		const allowedTools = new Set(getPlanModeTools());
+		if (!allowedTools.has(event.toolName)) {
+			return {
+				block: true,
+				reason: `Plan mode: tool blocked (${event.toolName}). Allowed tools: ${[...allowedTools].join(", ")}`,
+			};
+		}
+
+		if (event.toolName !== "bash") return;
 
 		const command = typeof (event.input as { command?: unknown }).command === "string" ? (event.input as { command: string }).command : "";
 		if (!isSafeCommand(command)) {
@@ -303,6 +464,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		currentCtx = ctx;
 		if (!executionMode || todoItems.length === 0) return;
 		if (!isAssistantMessage(event.message)) return;
 
@@ -314,6 +476,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
+		currentCtx = ctx;
 		if (executionMode && todoItems.length > 0) {
 			if (todoItems.every((item) => item.completed)) {
 				const completedList = todoItems.map((item) => `~~${item.text}~~`).join("\n");
@@ -374,61 +537,23 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		}
 	});
 
+	pi.on("session_before_switch", async () => {
+		resetPeerState();
+	});
+
+	pi.on("session_before_fork", async () => {
+		resetPeerState();
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
-		planModeEnabled = false;
-		executionMode = false;
-		todoItems = [];
-		restoreTools = null;
+		await syncStateFromSession(ctx);
+	});
 
-		const entries = ctx.sessionManager.getEntries() as SessionEntryLike[];
-		const planModeEntry = entries
-			.filter((entry) => entry.type === "custom" && entry.customType === "plan-mode")
-			.pop() as SessionEntryLike | undefined;
-		const persisted = planModeEntry?.data;
+	pi.on("session_switch", async (_event, ctx) => {
+		await syncStateFromSession(ctx);
+	});
 
-		if (persisted) {
-			planModeEnabled = persisted.enabled ?? false;
-			executionMode = persisted.executing ?? false;
-			todoItems = persisted.todos ?? [];
-			restoreTools = sanitizeToolNames(persisted.restoreTools ?? null);
-		}
-
-		if (pi.getFlag("plan") === true) {
-			planModeEnabled = true;
-			executionMode = false;
-			todoItems = [];
-		}
-
-		if (!restoreTools || restoreTools.length === 0) {
-			restoreTools = sanitizeToolNames(getCurrentActiveTools());
-		}
-
-		if (planModeEnabled) {
-			pi.setActiveTools(getPlanModeTools());
-		} else if (executionMode) {
-			applyRestoreTools();
-		}
-
-		if (executionMode && todoItems.length > 0) {
-			let executeIndex = -1;
-			for (let i = entries.length - 1; i >= 0; i--) {
-				if (entries[i].customType === PLAN_EXECUTE_MESSAGE_TYPE) {
-					executeIndex = i;
-					break;
-				}
-			}
-
-			const messages: AssistantMessageLike[] = [];
-			for (let i = executeIndex + 1; i < entries.length; i++) {
-				const message = entries[i]?.message;
-				if (isAssistantMessage(message)) {
-					messages.push(message);
-				}
-			}
-			const allText = messages.map(getTextContent).join("\n");
-			markCompletedSteps(allText, todoItems);
-		}
-
-		updateStatus(ctx);
+	pi.on("session_fork", async (_event, ctx) => {
+		await syncStateFromSession(ctx);
 	});
 }
