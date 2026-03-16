@@ -13,6 +13,7 @@ const MODE_STATE_EVENT = "pi-config:mode-state";
 interface PersistedPlanModeState {
 	enabled?: boolean;
 	executing?: boolean;
+	todoTrackingEnabled?: boolean;
 	todos?: TodoItem[];
 	restoreTools?: string[] | null;
 	executionTools?: string[] | null;
@@ -47,10 +48,25 @@ function getTextContent(message: AssistantMessageLike): string {
 		.join("\n");
 }
 
+function getLatestPlanTodoItems(entries: SessionEntryLike[]): TodoItem[] {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const message = entries[i]?.message;
+		if (!isAssistantMessage(message)) continue;
+
+		const extracted = extractTodoItems(getTextContent(message));
+		if (extracted.length > 0) {
+			return extracted;
+		}
+	}
+
+	return [];
+}
+
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let currentCtx: ExtensionContext | undefined;
 	let planModeEnabled = false;
 	let executionMode = false;
+	let todoTrackingEnabled = false;
 	let todoItems: TodoItem[] = [];
 	let restoreTools: string[] | null = null;
 	let executionTools: string[] | null = null;
@@ -104,11 +120,40 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		applyRestoreTools();
 	}
 
+	function hasTrackedTodoItems(): boolean {
+		return todoTrackingEnabled && todoItems.length > 0;
+	}
+
+	function resetTodoTracking(): void {
+		todoTrackingEnabled = false;
+		todoItems = [];
+	}
+
+	function getTrackedPlanItemsFromSession(ctx?: ExtensionContext): TodoItem[] {
+		const activeCtx = ctx ?? currentCtx;
+		if (!activeCtx) return [];
+		const entries = activeCtx.sessionManager.getEntries() as SessionEntryLike[];
+		return getLatestPlanTodoItems(entries);
+	}
+
+	function formatTodoList(items: TodoItem[]): string {
+		return items.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n");
+	}
+
+	function parseTodosCommand(args: string | undefined): "show" | "on" | "off" | null {
+		const normalized = (args ?? "").trim().toLowerCase();
+		if (!normalized || normalized === "show" || normalized === "list" || normalized === "status") return "show";
+		if (normalized === "on" || normalized === "enable") return "on";
+		if (normalized === "off" || normalized === "disable" || normalized === "clear") return "off";
+		return null;
+	}
+
 	function updateStatus(ctx?: ExtensionContext): void {
 		const activeCtx = ctx ?? currentCtx;
 		if (!activeCtx?.hasUI) return;
 
-		if (executionMode && todoItems.length > 0) {
+		const trackedExecutionActive = executionMode && hasTrackedTodoItems();
+		if (trackedExecutionActive) {
 			const completed = todoItems.filter((item) => item.completed).length;
 			activeCtx.ui.setStatus("plan-mode", activeCtx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
 		} else if (planModeEnabled) {
@@ -117,7 +162,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			activeCtx.ui.setStatus("plan-mode", undefined);
 		}
 
-		if (executionMode && todoItems.length > 0) {
+		if (trackedExecutionActive) {
 			const lines = todoItems.map((item) => {
 				if (item.completed) {
 					return activeCtx.ui.theme.fg("success", "☑ ") + activeCtx.ui.theme.fg("muted", activeCtx.ui.theme.strikethrough(item.text));
@@ -140,6 +185,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		pi.appendEntry(PLAN_MODE_STATE_TYPE, {
 			enabled: planModeEnabled,
 			executing: executionMode,
+			todoTrackingEnabled,
 			todos: todoItems,
 			restoreTools,
 			executionTools,
@@ -172,7 +218,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		planModeEnabled = true;
 		executionMode = false;
-		todoItems = [];
+		resetTodoTracking();
 		pi.setActiveTools(getPlanModeTools());
 		updateStatus(uiCtx);
 		persistState();
@@ -190,7 +236,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const uiCtx = ctx ?? currentCtx;
 		planModeEnabled = false;
 		executionMode = false;
-		todoItems = [];
+		resetTodoTracking();
 		if (options?.restoreToolsOnExit !== false) {
 			applyRestoreTools();
 		}
@@ -205,7 +251,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	function startExecution(ctx?: ExtensionContext): void {
 		planModeEnabled = false;
-		executionMode = todoItems.length > 0;
+		executionMode = hasTrackedTodoItems();
+		if (!executionMode) {
+			resetTodoTracking();
+		}
 		applyExecutionTools();
 		updateStatus(ctx);
 		persistState();
@@ -214,7 +263,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	function completeExecution(ctx?: ExtensionContext): void {
 		executionMode = false;
-		todoItems = [];
+		resetTodoTracking();
 		applyRestoreTools();
 		updateStatus(ctx);
 		persistState();
@@ -230,6 +279,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx;
 		planModeEnabled = false;
 		executionMode = false;
+		todoTrackingEnabled = false;
 		todoItems = [];
 		restoreTools = null;
 		executionTools = null;
@@ -244,6 +294,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			planModeEnabled = persisted.enabled ?? false;
 			executionMode = persisted.executing ?? false;
 			todoItems = persisted.todos ?? [];
+			todoTrackingEnabled = persisted.todoTrackingEnabled ?? (executionMode || todoItems.length > 0);
 			restoreTools = sanitizeToolNames(persisted.restoreTools ?? null);
 			executionTools = sanitizeToolNames(persisted.executionTools ?? null);
 		}
@@ -251,7 +302,18 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (pi.getFlag("plan") === true) {
 			planModeEnabled = true;
 			executionMode = false;
+			resetTodoTracking();
+		}
+
+		if (!todoTrackingEnabled) {
 			todoItems = [];
+			executionMode = false;
+		} else if (todoItems.length === 0) {
+			executionMode = false;
+		}
+
+		if (!planModeEnabled && !executionMode && todoItems.length === 0) {
+			todoTrackingEnabled = false;
 		}
 
 		if (!restoreTools || restoreTools.length === 0) {
@@ -267,7 +329,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			applyExecutionTools();
 		}
 
-		if (executionMode && todoItems.length > 0) {
+		if (executionMode && hasTrackedTodoItems()) {
 			let executeIndex = -1;
 			for (let i = entries.length - 1; i >= 0; i--) {
 				if (entries[i].customType === PLAN_EXECUTE_MESSAGE_TYPE) {
@@ -316,15 +378,76 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("todos", {
-		description: "Show current plan todo list",
-		handler: async (_args, ctx) => {
+		description: "Manage optional plan task tracking (show|on|off)",
+		handler: async (args, ctx) => {
 			currentCtx = ctx;
-			if (todoItems.length === 0) {
-				ctx.ui.notify("No tracked plan items yet. Generate a plan first with /plan.", "info");
+			const action = parseTodosCommand(args);
+			if (!action) {
+				notify(ctx, "Usage: /todos [show|on|off]");
 				return;
 			}
-			const list = todoItems.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n");
-			ctx.ui.notify(`Plan Progress:\n${list}`, "info");
+
+			if (action === "on") {
+				if (!planModeEnabled && !executionMode) {
+					notify(ctx, "Task tracking works with /plan. Enable /plan first, then run /todos on.");
+					return;
+				}
+
+				todoTrackingEnabled = true;
+				if (todoItems.length === 0) {
+					const extracted = getTrackedPlanItemsFromSession(ctx);
+					if (extracted.length > 0) {
+						todoItems = extracted;
+					}
+				}
+
+				updateStatus(ctx);
+				persistState();
+
+				if (todoItems.length === 0) {
+					notify(ctx, "Task tracking enabled. Once the assistant produces a numbered Plan: block, /todos will show the tracked steps.");
+					return;
+				}
+
+				notify(ctx, `Task tracking enabled.\n\nPlan Progress:\n${formatTodoList(todoItems)}`);
+				return;
+			}
+
+			if (action === "off") {
+				const wasTrackedExecution = executionMode && hasTrackedTodoItems();
+				executionMode = false;
+				resetTodoTracking();
+				updateStatus(ctx);
+				persistState();
+				emitModeState();
+				notify(
+					ctx,
+					wasTrackedExecution
+						? "Task tracking disabled. Plan execution will continue without tracked progress."
+						: "Task tracking disabled.",
+				);
+				return;
+			}
+
+			if (!todoTrackingEnabled) {
+				notify(ctx, "Task tracking is off. Use /todos on to enable it for the current plan.");
+				return;
+			}
+
+			if (todoItems.length === 0) {
+				const extracted = getTrackedPlanItemsFromSession(ctx);
+				if (extracted.length > 0) {
+					todoItems = extracted;
+					persistState();
+				}
+			}
+
+			if (todoItems.length === 0) {
+				notify(ctx, "Task tracking is enabled, but no numbered Plan: steps have been captured yet.");
+				return;
+			}
+
+			notify(ctx, `Plan Progress:\n${formatTodoList(todoItems)}`);
 		},
 	});
 
@@ -444,7 +567,7 @@ Do NOT attempt to make changes yet.`,
 			};
 		}
 
-		if (executionMode && todoItems.length > 0) {
+		if (executionMode && hasTrackedTodoItems()) {
 			const remaining = todoItems.filter((item) => !item.completed);
 			const todoList = remaining.map((item) => `${item.step}. ${item.text}`).join("\n");
 			return {
@@ -465,7 +588,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 	pi.on("turn_end", async (event, ctx) => {
 		currentCtx = ctx;
-		if (!executionMode || todoItems.length === 0) return;
+		if (!executionMode || !hasTrackedTodoItems()) return;
 		if (!isAssistantMessage(event.message)) return;
 
 		const text = getTextContent(event.message);
@@ -477,7 +600,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 	pi.on("agent_end", async (event, ctx) => {
 		currentCtx = ctx;
-		if (executionMode && todoItems.length > 0) {
+		if (executionMode && hasTrackedTodoItems()) {
 			if (todoItems.every((item) => item.completed)) {
 				const completedList = todoItems.map((item) => `~~${item.text}~~`).join("\n");
 				pi.sendMessage(
@@ -491,16 +614,18 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 		if (!planModeEnabled || !ctx.hasUI) return;
 
-		const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-		if (lastAssistant) {
-			const extracted = extractTodoItems(getTextContent(lastAssistant));
-			if (extracted.length > 0) {
-				todoItems = extracted;
-				persistState();
+		if (todoTrackingEnabled) {
+			const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
+			if (lastAssistant) {
+				const extracted = extractTodoItems(getTextContent(lastAssistant));
+				if (extracted.length > 0) {
+					todoItems = extracted;
+					persistState();
+				}
 			}
 		}
 
-		if (todoItems.length > 0) {
+		if (todoTrackingEnabled && todoItems.length > 0) {
 			const todoListText = todoItems.map((item, i) => `${i + 1}. ☐ ${item.text}`).join("\n");
 			pi.sendMessage(
 				{
@@ -513,7 +638,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		}
 
 		const choice = await ctx.ui.select("Plan mode - what next?", [
-			todoItems.length > 0 ? "Execute the plan (track progress)" : "Execute the plan",
+			todoTrackingEnabled && todoItems.length > 0 ? "Execute the plan (track progress)" : "Execute the plan",
 			"Stay in plan mode",
 			"Refine the plan",
 		]);
@@ -521,7 +646,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		if (choice?.startsWith("Execute")) {
 			startExecution(ctx);
 			const execMessage =
-				todoItems.length > 0 ? `Execute the plan. Start with: ${todoItems[0].text}` : "Execute the plan you just created.";
+				executionMode && todoItems.length > 0 ? `Execute the plan. Start with: ${todoItems[0].text}` : "Execute the plan you just created.";
 			pi.sendMessage(
 				{ customType: PLAN_EXECUTE_MESSAGE_TYPE, content: execMessage, display: true },
 				{ triggerTurn: true },

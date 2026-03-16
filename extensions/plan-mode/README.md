@@ -6,18 +6,20 @@ Read-only exploration mode for safe code analysis.
 
 - **Read-only tools**: Restricts available tools to `read`, `bash`, `grep`, `find`, `ls`, `questionnaire`, `worktree_info`, and optionally `web_fetch`
 - **Bash allowlist**: Only read-only bash commands are allowed
-- **Plan extraction**: Extracts numbered steps from `Plan:` sections
-- **Progress tracking**: Widget shows completion status during execution
-- **[DONE:n] markers**: Explicit step completion tracking
+- **Optional task tracking**: Numbered `Plan:` steps can be tracked, but tracking is off by default and only turns on when you explicitly ask for it
+- **Progress tracking widget**: Shows completion status only during tracked execution
+- **[DONE:n] markers**: Used only when task tracking is enabled
 - **Session persistence**: State survives session resume, switch, and fork
 - **Tool restoration**: Restores the previously active non-mode tool set after leaving plan mode
 - **Mode coexistence**: Cooperates with other mode-style extensions via the event bus without requiring them
-- **Mode indicator**: shows `⏸ plan` while planning and `📋 n/m` during execution; with `mode-footer` loaded it is rendered on footer line 2 next to the model info instead of Pi's default status line
+- **Mode indicator**: shows `⏸ plan` while planning and `📋 n/m` only during tracked execution; with `mode-footer` loaded it is rendered on footer line 2 next to the model info instead of Pi's default status line
 
 ## Commands
 
 - `/plan` - Toggle plan mode
-- `/todos` - Show current plan progress
+- `/todos` - Show task-tracking status for the current plan
+- `/todos on` - Enable task tracking for the current plan
+- `/todos off` - Disable task tracking and clear tracked items
 - `Ctrl+Alt+P` - Toggle plan mode (shortcut)
 
 ## Usage
@@ -33,9 +35,13 @@ Plan:
 3. Third step description
 ```
 
-4. Choose **Execute the plan** when prompted
-5. During execution, the agent marks steps complete with `[DONE:n]` tags
-6. Progress widget shows completion status
+4. If you want tracked tasks for that plan, explicitly enable them with `/todos on`
+5. Choose **Execute the plan** when prompted
+6. Only when task tracking is enabled:
+   - the plan steps are captured into a tracked todo list
+   - execution includes `[DONE:n]` progress markers
+   - the progress widget shows completion status
+7. If you do not enable task tracking, plan mode still works normally without todo/task UI
 
 ## Interoperability
 
