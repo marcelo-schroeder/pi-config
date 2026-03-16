@@ -12,6 +12,7 @@ Read-only exploration mode for safe code analysis.
 - **Session persistence**: State survives session resume, switch, and fork
 - **Tool restoration**: Restores the previously active non-mode tool set after leaving plan mode
 - **Mode coexistence**: Cooperates with other mode-style extensions via the event bus without requiring them
+- **Mode indicator**: shows `⏸ plan` while planning and `📋 n/m` during execution; with `mode-footer` loaded it is rendered on footer line 2 next to the model info instead of Pi's default status line
 
 ## Commands
 

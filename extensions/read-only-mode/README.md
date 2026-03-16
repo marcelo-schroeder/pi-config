@@ -9,7 +9,7 @@ Default safe mode for pi sessions.
 - **Strict tool allowlist**: restricts available tools to read-only ones such as `read`, `grep`, `find`, `ls`, `worktree_info`, `questionnaire`, and optionally `bash`/`web_fetch`
 - **Bash allowlist**: only explicitly read-only bash commands are allowed
 - **Defense in depth**: both active tools and `tool_call` interception enforce the restriction
-- **Footer indicator**: shows `🔒 read-only` while active
+- **Mode indicator**: shows `🔒 read-only` while active; with `mode-footer` loaded it is rendered on footer line 2 next to the model info instead of Pi's default status line
 - **Mode coexistence**: cooperates with other mode-style extensions via the event bus without requiring them
 
 ## Commands
