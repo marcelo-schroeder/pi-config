@@ -47,7 +47,7 @@ Then proceed directly to execution unless the user interrupts or gives contrary 
 Before performing any mutating git command (`git reset`, `git add`, or `git commit`), create a safety snapshot by running:
 
 ```bash
-/Users/marceloschroeder/myfiles/projects/pi-config/extensions/git-snapshot/scripts/create-stash-snapshot.sh --json
+../../extensions/git-snapshot/scripts/create-stash-snapshot.sh --json
 ```
 
 Behavior:
