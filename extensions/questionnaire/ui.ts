@@ -210,7 +210,9 @@ export async function runQuestionnaireUI(
 			const lines: string[] = [];
 			const question = currentQuestion();
 			const options = currentOptions();
-			const add = (text: string): void => lines.push(truncateToWidth(text, width));
+			const add = (text: string): void => {
+				lines.push(truncateToWidth(text, width));
+			};
 
 			add(theme.fg("accent", "─".repeat(width)));
 

@@ -110,6 +110,19 @@ skills/          Top-level Pi skills
 packages/piw/    Standalone piw package and private extension
 ```
 
+## Development
+
+This repo now includes root-level TypeScript tooling for repo-wide type-checking of the top-level extensions, the TypeScript under [`packages/piw/extensions/`](packages/piw/extensions/), and shared declarations under [`packages/piw/src/`](packages/piw/src/).
+
+From the repo root:
+
+```bash
+npm install
+npm run typecheck
+```
+
+That root tooling is only for validating the repo's TypeScript sources and declarations. You do not need the root `npm install` step just to use this repo as a Pi package with `pi install`, and it does not replace the standalone package setup inside [`packages/piw/`](packages/piw/).
+
 ## Related Pi docs
 
 If you are new to Pi itself, the upstream docs are the best reference for the surrounding concepts:

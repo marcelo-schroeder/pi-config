@@ -1,0 +1,17 @@
+{
+  "name": "pi-config-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Development tooling for the pi-config repository",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.60.0",
+    "@mariozechner/pi-coding-agent": "^0.60.0",
+    "@mariozechner/pi-tui": "^0.60.0",
+    "@sinclair/typebox": "^0.34.48",
+    "@types/node": "^24.3.0",
+    "typescript": "^5.7.3"
+  }
+}
