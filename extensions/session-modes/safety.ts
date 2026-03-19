@@ -1,8 +1,7 @@
 /**
- * Pure utility functions for read-only mode.
+ * Shared safety rules for session modes.
  */
 
-// Destructive commands blocked in read-only mode
 const DESTRUCTIVE_PATTERNS = [
 	/\brm\b/i,
 	/\brmdir\b/i,
@@ -39,7 +38,6 @@ const DESTRUCTIVE_PATTERNS = [
 	/\b(vim?|nano|emacs|code|subl)\b/i,
 ];
 
-// Safe read-only commands allowed in read-only mode
 const SAFE_PATTERNS = [
 	/^\s*cat\b/,
 	/^\s*head\b/,
@@ -91,10 +89,10 @@ const SAFE_PATTERNS = [
 	/^\s*fd\b/,
 	/^\s*bat\b/,
 	/^\s*exa\b/,
-];
+] as const;
 
 export function isSafeCommand(command: string): boolean {
-	const isDestructive = DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command));
-	const isSafe = SAFE_PATTERNS.some((pattern) => pattern.test(command));
-	return !isDestructive && isSafe;
+	const destructive = DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command));
+	const safe = SAFE_PATTERNS.some((pattern) => pattern.test(command));
+	return !destructive && safe;
 }

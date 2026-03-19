@@ -51,15 +51,13 @@ Pi will auto-discover the top-level `extensions/` and `skills/` directories usin
 If you want a sensible default setup from this repo, start with:
 
 - [`questionnaire`](extensions/questionnaire/README.md)
-- [`read-only-mode`](extensions/read-only-mode/README.md)
-- [`plan-mode`](extensions/plan-mode/README.md)
-- [`mode-footer`](extensions/mode-footer/README.md)
+- [`session-modes`](extensions/session-modes/README.md)
 - optionally [`git-snapshot`](extensions/git-snapshot/README.md)
 
 A couple of useful relationships to know up front:
 
 - `questionnaire` is the companion extension that provides the `questionnaire` tool used by planning / structured clarification workflows
-- `mode-footer` is optional, but it makes the `read-only-mode` and `plan-mode` status badges render more cleanly in Pi's footer
+- `session-modes` replaces three former local extensions with one unified mode + plan workflow
 
 ## Using `piw`
 
@@ -91,9 +89,7 @@ Enable these with `pi config` after installing the repo as a Pi package.
 | Extension | Purpose | Docs |
 | --- | --- | --- |
 | `questionnaire` | Structured interactive question/answer tool for short clarifications and confirmations. Companion extension used by other workflows in this repo. | [`extensions/questionnaire/README.md`](extensions/questionnaire/README.md) |
-| `read-only-mode` | Default-safe mode for Pi sessions with a read-only tool allowlist. | [`extensions/read-only-mode/README.md`](extensions/read-only-mode/README.md) |
-| `plan-mode` | Read-only planning mode with optional tracked execution and task progress UI. | [`extensions/plan-mode/README.md`](extensions/plan-mode/README.md) |
-| `mode-footer` | Moves mode badges like `🔒 read-only` and `📋 n/m` into a cleaner footer position. | [`extensions/mode-footer/README.md`](extensions/mode-footer/README.md) |
+| `session-modes` | Unified `default` / `read-only` / `plan` session modes with persisted session-linked plans and integrated footer UI. | [`extensions/session-modes/README.md`](extensions/session-modes/README.md) |
 | `git-snapshot` | Adds `/snapshot` commands for stash-style workspace snapshots. | [`extensions/git-snapshot/README.md`](extensions/git-snapshot/README.md) |
 
 ## Skills

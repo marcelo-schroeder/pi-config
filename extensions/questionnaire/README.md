@@ -2,7 +2,7 @@
 
 Provides a `questionnaire` tool for asking structured clarification questions in interactive Pi sessions.
 
-This extension is mainly intended as a building block for other workflows in this repo, especially [`plan-mode`](../plan-mode/README.md) and [`read-only-mode`](../read-only-mode/README.md), but it can also be useful on its own whenever the model should ask the user to choose from clear options instead of free-form chat.
+This extension is mainly intended as a building block for other workflows in this repo, especially [`session-modes`](../session-modes/README.md), but it can also be useful on its own whenever the model should ask the user to choose from clear options instead of free-form chat.
 
 ## What it does
 
@@ -71,6 +71,6 @@ Example:
 
 ## Notes
 
-- `plan-mode` and `read-only-mode` both include `questionnaire` in their read-only tool flows.
+- `session-modes` includes `questionnaire` in its read-only / planning tool flow.
 - This extension provides a tool, not a slash command.
-- Implementation lives in [`index.ts`](./index.ts).
+- Implementation lives in [`index.ts`](./index.ts) with shared UI logic in [`ui.ts`](./ui.ts).
