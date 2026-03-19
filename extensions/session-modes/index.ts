@@ -9,7 +9,6 @@ import { installSessionModesFooter } from "./footer.ts";
 import { generateFriendlyPlanId } from "./ids.ts";
 import {
 	buildPlanRecord,
-	createDefaultState,
 	formatPlanForContext,
 	formatPlanForDisplay,
 	formatPlanList,
@@ -40,6 +39,15 @@ const IMPLEMENT_PLAN_CHOICES = normalizeQuestions([
 		allowOther: false,
 	},
 ]);
+const PLAN_COMPLETENESS_GUIDANCE = [
+	"When creating or updating a plan, treat it as the canonical execution artifact and make it self-contained.",
+	"Write the plan so a competent agent with no access to prior conversation context can execute it without losing quality.",
+	"When creating or updating a plan, completeness and clarity override generic brevity or style guidance.",
+	"Include whatever context is needed to preserve execution quality, such as the goal and intended outcome, relevant current context and assumptions, concrete intended changes, affected files/components/systems, dependencies and sequencing, constraints/invariants/non-goals, edge cases, validation/tests/acceptance criteria, and material risks, open questions, or decision points.",
+	"Do not rely on prior conversational context or shorthand like 'as discussed above' or 'continue the previous approach'.",
+	"If an important detail is unknown and would require guessing, ask focused questions or explicitly record the uncertainty and how it should be resolved.",
+	"Keep the structure flexible and tailored to the task rather than forcing a rigid template, but never omit information merely to be brief.",
+] as const;
 
 const SessionPlanParams = Type.Object({
 	action: StringEnum(["create", "update", "show", "list", "select"] as const, {
@@ -87,15 +95,68 @@ function normalizeSteps(steps: unknown): string[] {
 		.filter((step) => step.length > 0);
 }
 
-function isPlanMutationPrompt(text: string): boolean {
+type PlanModePromptKindWithoutCurrentPlan = "plan-meta" | "plan-mutation" | "substantive-work" | "other";
+
+function isPlanViewPrompt(text: string): boolean {
 	const normalized = text.toLowerCase();
-	const showOnlyPatterns = [
-		/\b(show|display|present|list|summarize|what is|what's|which|view)\b.{0,30}\bplan\b/,
+	const patterns = [
+		/\b(show|display|present|list|summarize|view)\b.{0,30}\bplans?\b/,
+		/\bselect\b.{0,30}\bplan\b/,
+		/\bselect\b.{0,30}\b[a-z0-9]+(?:-[a-z0-9]+){2}\b/,
 		/\bplan id\b/,
 		/\bplans\b.{0,10}\bdo we have\b/,
-		/\bimplement\b.{0,30}\bplan\b/,
+		/\bdo we have\b.{0,20}\b(current\s+)?plan\b/,
+		/\bis there\b.{0,20}\b(current\s+)?plan\b/,
+		/\bwhat(?:'s| is)?\b.{0,20}\b(current|active)\s+plan\b/,
+		/\bwhich\b.{0,20}\bplan\b/,
 	];
-	if (showOnlyPatterns.some((pattern) => pattern.test(normalized))) {
+	return patterns.some((pattern) => pattern.test(normalized));
+}
+
+function isPlanMetaPrompt(text: string): boolean {
+	const normalized = text.toLowerCase();
+	const patterns = [
+		/\b(are|am|is|was|were|do|does|did|can|could|would|should)\b.{0,40}\b(plan mode|read-?only mode|session mode)\b/,
+		/\bdo you\b.{0,20}\b(see|notice|know|think)\b.{0,30}\b(plan mode|session mode)\b/,
+		/\bhow\b.{0,20}\b(plan mode|session mode)\b.{0,20}\b(work|behave|function)\b/,
+		/\bwhat(?:'s| is)\b.{0,20}\b(plan mode|session mode)\b/,
+		/\bwhy\b.{0,20}\b(plan mode|session mode)\b.{0,20}\b(active|enabled|on)\b/,
+		/\bwhen\b.{0,20}\b(plan mode|session mode)\b.{0,20}\b(used|apply|active)\b/,
+		/\b(current|active)\s+mode\b/,
+	];
+	return patterns.some((pattern) => pattern.test(normalized));
+}
+
+function isLowSignalPrompt(text: string): boolean {
+	return /^\s*(ok(?:ay)?|thanks?|thank you|cool|sure|yes|no)\s*[.!?]*\s*$/i.test(text);
+}
+
+// In manual plan mode with no current plan, default to planning-first behavior.
+// Examples:
+// - "Are we in plan mode right now?" => plan-meta
+// - "Show/list/select the plan" => plan-meta
+// - "Create a plan for this bug" => plan-mutation
+// - "There is a bug in session-modes..." => substantive-work
+function classifyPlanModePromptWithoutCurrentPlan(text: string): PlanModePromptKindWithoutCurrentPlan {
+	const normalized = text.trim();
+	if (!normalized || isLowSignalPrompt(normalized)) {
+		return "other";
+	}
+	if (isPlanMutationPrompt(normalized)) {
+		return "plan-mutation";
+	}
+	if (isPlanViewPrompt(normalized) || isPlanMetaPrompt(normalized)) {
+		return "plan-meta";
+	}
+	if (isPlanImplementationPrompt(normalized)) {
+		return "substantive-work";
+	}
+	return "substantive-work";
+}
+
+function isPlanMutationPrompt(text: string): boolean {
+	const normalized = text.toLowerCase();
+	if (isPlanViewPrompt(normalized) || isPlanMetaPrompt(normalized) || /\bimplement\b.{0,30}\bplan\b/.test(normalized)) {
 		return false;
 	}
 
@@ -114,6 +175,30 @@ function isPlanMutationPrompt(text: string): boolean {
 function buildImplementationPrompt(plan: PlanRecord): string {
 	const title = plan.title ? ` (${plan.title})` : "";
 	return `Implement current plan ${plan.id}${title}.`;
+}
+
+function isPlanImplementationPrompt(text: string): boolean {
+	if (isPlanMutationPrompt(text)) {
+		return false;
+	}
+
+	const normalized = text.toLowerCase();
+	const explicitPlanningPatterns = [
+		/\b(create|make|draft|write|prepare|build)\b.{0,30}\b(plan|implementation plan)\b/,
+		/\b(update|modify|change|revise|refine|adjust|rework|amend|expand)\b.{0,30}\bplan\b/,
+		/\b(add|remove)\b.{0,30}\bplan\b/,
+	];
+	if (explicitPlanningPatterns.some((pattern) => pattern.test(normalized))) {
+		return false;
+	}
+
+	const implementationPatterns = [
+		/\b(implement|execute|carry out)\b.{0,30}\b(plan|steps)\b/,
+		/\b(start|begin|go ahead|proceed|continue)\b.{0,20}\b(with\s+)?(the\s+)?(current\s+)?plan\b/,
+		/\bwork on\b.{0,20}\b(the\s+)?(current\s+)?plan\b/,
+		/\buse\b.{0,10}\b(the\s+)?plan\b.{0,20}\b(implement|execute|build|make|do)\b/,
+	];
+	return implementationPatterns.some((pattern) => pattern.test(normalized));
 }
 
 function getPlanSummaries(plansById: Map<string, PlanRecord>, currentPlanId: string | null): SessionPlanSummary[] {
@@ -151,6 +236,7 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 	let currentPlanId: string | null = null;
 	let restoreTools: string[] | null = null;
 	let plansById = new Map<string, PlanRecord>();
+	let isAwaitingPlanImplementationChoice = false;
 
 	function getAvailableToolNames(): Set<string> {
 		return new Set(pi.getAllTools().map((tool) => tool.name));
@@ -258,6 +344,7 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 
 	function syncStateFromSession(ctx: ExtensionContext): void {
 		currentCtx = ctx;
+		isAwaitingPlanImplementationChoice = false;
 		const previousRestoreTools = sanitizeToolNames(restoreTools);
 		const entries = ctx.sessionManager.getBranch() as SessionEntryLike[];
 		const snapshot = reconstructSessionModes(entries, getAvailableToolNames());
@@ -282,6 +369,39 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 		}
 
 		installUI(ctx);
+	}
+
+	async function startPlanImplementation(
+		action: "clean" | "keep",
+		ctx: ExtensionContext,
+		plan: PlanRecord,
+	): Promise<void> {
+		currentCtx = ctx;
+
+		if (action === "keep") {
+			applyMode("default", ctx, { silent: true });
+			notify(ctx, "Session mode: default");
+			await pi.sendUserMessage(buildImplementationPrompt(plan));
+			return;
+		}
+
+		notify(ctx, "Cleaning context before implementation...");
+		ctx.compact({
+			customInstructions: `Prepare the session to implement current plan ${plan.id}. Keep only the information needed to execute the persisted plan, preserve essential architectural context and constraints, and drop plan-authoring chatter or redundant history.`,
+			onComplete: () => {
+				currentCtx = ctx;
+				persistPlan(plan);
+				setCurrentPlan(plan.id);
+				applyMode("default", ctx, { silent: true });
+				notify(ctx, "Session mode: default");
+				void pi.sendUserMessage(buildImplementationPrompt(plan));
+			},
+			onError: (error) => {
+				if (ctx.hasUI) {
+					ctx.ui.notify(`Failed to clean context before implementation: ${error.message}`, "error");
+				}
+			},
+		});
 	}
 
 	function renderPlanResult(details: SessionPlanToolDetails, theme: ExtensionContext["ui"]["theme"]): Text {
@@ -335,7 +455,14 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 			"Use this tool whenever the user asks to create, update, show, list, or select a plan.",
 			"If the user refers to 'the plan' without an id, treat it as the current plan if one exists.",
 			"If the user refers to a specific plan id, pass that id and it becomes the current plan.",
+			"In plan mode, if there is no current plan and the user gives a substantive prompt about a bug, problem, task, challenge, or desired change, treat it as a request to create a persisted implementation plan first even if the user never says 'plan'.",
+			"In plan mode, if there is no current plan and the user asks to implement or proceed with work that should be planned, treat that as a request to create an implementation plan first.",
+			"If the request already contains enough information, create the plan immediately. Otherwise ask only the missing focused questions, using questionnaire when it will help.",
 			"Create and update are for full persisted plans with ordered steps and should be used in plan mode.",
+			"After session_plan create or update, present the full formatted persisted plan exactly once as the canonical result.",
+			"Do not replace that plan presentation with a summary, congratulatory text, or next-step narration.",
+			"If the UI or tool already renders the formatted plan and follow-up questionnaire, add no extra assistant text by default; only add text if clarification is needed or the tool output failed to render.",
+			...PLAN_COMPLETENESS_GUIDANCE,
 		],
 		parameters: SessionPlanParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -524,26 +651,7 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (action === "keep") {
-				applyMode("default", ctx, { silent: true });
-				pi.sendUserMessage(buildImplementationPrompt(plan));
-				return;
-			}
-
-			await ctx.waitForIdle();
-			const currentSessionFile = ctx.sessionManager.getSessionFile();
-			const result = await ctx.newSession({
-				parentSession: currentSessionFile,
-				setup: async (sessionManager) => {
-					sessionManager.appendCustomEntry(SESSION_MODES_PLAN_TYPE, { plan });
-					sessionManager.appendCustomEntry(SESSION_MODES_STATE_TYPE, {
-						...createDefaultState(),
-						currentPlanId: plan.id,
-					});
-				},
-			});
-			if (result.cancelled) return;
-			pi.sendUserMessage(buildImplementationPrompt(plan));
+			await startPlanImplementation(action, ctx, plan);
 		},
 	});
 
@@ -555,6 +663,18 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 		if (currentMode !== "plan" && isPlanMutationPrompt(event.text)) {
 			applyMode("plan", ctx, { silent: true });
 			notify(ctx, "Session mode: plan");
+			return { action: "continue" };
+		}
+
+		const currentPlan = getCurrentPlan();
+		if (
+			currentMode === "plan" &&
+			currentPlan &&
+			!isAwaitingPlanImplementationChoice &&
+			isPlanImplementationPrompt(event.text)
+		) {
+			applyMode("default", ctx, { silent: true });
+			notify(ctx, "Session mode: default");
 		}
 		return { action: "continue" };
 	});
@@ -610,6 +730,8 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 		const knownPlanIds = [...plansById.keys()].sort();
 		const promptText = typeof event.prompt === "string" ? event.prompt : "";
 		const promptMentionsPlan = /\bplans?\b/i.test(promptText) || knownPlanIds.some((planId) => promptText.includes(planId));
+		const planlessPlanModePromptKind =
+			currentMode === "plan" && !currentPlan ? classifyPlanModePromptWithoutCurrentPlan(promptText) : null;
 		if (currentMode === "default" && !promptMentionsPlan) {
 			return;
 		}
@@ -628,6 +750,7 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 			lines.push("- If the user refers to 'the plan' without an id, use the current plan if one exists.");
 			lines.push("- If the user refers to a specific plan id, use that id and treat it as the current plan.");
 			lines.push("- Create and update should persist the full revised plan with ordered steps.");
+			lines.push("- If plan mode is active and there is no current plan, treat substantive work prompts as implicit requests to create a persisted implementation plan first, even when the user never says 'plan'.");
 		}
 
 		if (currentPlan) {
@@ -649,6 +772,26 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 			lines.push("Plan mode guidance:");
 			lines.push(`- Focus on creating or updating the session plan with ${SESSION_PLAN_TOOL}.`);
 			lines.push("- When creating or modifying a plan, persist it before you finish your response.");
+			lines.push("- After session_plan create or update, present the full formatted persisted plan exactly once as the canonical result.");
+			lines.push("- Do not replace that plan presentation with a summary, congratulatory text, or next-step narration.");
+			lines.push("- If the UI or tool already renders the formatted plan and follow-up questionnaire, add no extra assistant text by default; only add text if clarification is needed or the tool output failed to render.");
+			lines.push("- If there is no current plan, treat substantive work prompts as requests to create a persisted implementation plan from the available information, even when the user does not mention planning explicitly.");
+			if (!currentPlan) {
+				lines.push("- There is no current plan in this session.");
+				if (planlessPlanModePromptKind === "plan-meta") {
+					lines.push("- This turn is a plan/meta/status prompt. Answer it directly or use session_plan for show/list/select; do not create or update a plan unless the user explicitly asks.");
+				} else if (planlessPlanModePromptKind === "plan-mutation") {
+					lines.push("- This turn explicitly asks to create or modify a plan. Persist the plan with session_plan before you finish your response.");
+				} else if (planlessPlanModePromptKind === "substantive-work") {
+					lines.push(`- This turn is a substantive work prompt with no current plan. Treat the user's request as an implicit request to create a persisted implementation plan now with ${SESSION_PLAN_TOOL}.`);
+					lines.push("- Do not answer the work request generally and do not start implementation in this turn.");
+				} else {
+					lines.push("- Unless this turn is only about plan/meta/status, default to creating a persisted implementation plan before any implementation work.");
+				}
+			}
+			for (const guideline of PLAN_COMPLETENESS_GUIDANCE) {
+				lines.push(`- ${guideline}`);
+			}
 			lines.push("- You may answer plan-related questions without changing the plan.");
 			lines.push("- Do not start implementation while plan mode is active.");
 		}
@@ -669,11 +812,16 @@ export default function sessionModesExtension(pi: ExtensionAPI): void {
 		const mutation = getPlanMutationFromMessages(event.messages);
 		if (!mutation?.plan) return;
 
-		const questionnaireResult = await runQuestionnaireUI(ctx, IMPLEMENT_PLAN_CHOICES);
-		const choice = questionnaireResult.cancelled ? "stay" : questionnaireResult.answers[0]?.value ?? "stay";
-		if (choice === "stay") return;
-		if (choice === "keep" || choice === "clean") {
-			pi.sendUserMessage(`/${IMPLEMENT_PLAN_COMMAND} ${choice}`);
+		isAwaitingPlanImplementationChoice = true;
+		try {
+			const questionnaireResult = await runQuestionnaireUI(ctx, IMPLEMENT_PLAN_CHOICES);
+			const choice = questionnaireResult.cancelled ? "stay" : questionnaireResult.answers[0]?.value ?? "stay";
+			if (choice === "stay") return;
+			if (choice === "keep" || choice === "clean") {
+				await startPlanImplementation(choice, ctx, mutation.plan);
+			}
+		} finally {
+			isAwaitingPlanImplementationChoice = false;
 		}
 	});
 
