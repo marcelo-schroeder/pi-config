@@ -1,6 +1,14 @@
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { resolve } from "node:path";
+
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+
+import {
+	createSnapshot,
+	resolveRepoRoot,
+	SNAPSHOT_MESSAGE_PREFIX,
+	type CreateSnapshotResult,
+} from "./snapshot.js";
 
 type SnapshotSubcommand = "create" | "list" | "restore" | "help";
 
@@ -24,22 +32,29 @@ interface RestoreOptions {
 	yes: boolean;
 }
 
-interface CreateSnapshotResult {
-	created: boolean;
-	reason: string | null;
-	repoRoot: string;
-	snapshotCommit: string | null;
-	stashRef: string | null;
-	message: string | null;
-	includedUntracked: boolean;
-	includedIgnored: boolean;
-}
-
 interface SnapshotListEntry {
 	stashRef: string;
 	commit: string;
 	message: string;
 }
+
+const SnapshotCreateToolParams = Type.Object({
+	repoPath: Type.Optional(
+		Type.String({
+			description: "Path to the target Git repository. Defaults to the current session working directory.",
+		}),
+	),
+	message: Type.Optional(
+		Type.String({
+			description: "Optional snapshot message. If omitted, a timestamped pi snapshot message is generated.",
+		}),
+	),
+	trackedOnly: Type.Optional(
+		Type.Boolean({
+			description: "When true, exclude untracked files from the snapshot.",
+		}),
+	),
+});
 
 const SNAPSHOT_SUBCOMMANDS = new Set<SnapshotSubcommand | "--help" | "-h">([
 	"create",
@@ -50,11 +65,8 @@ const SNAPSHOT_SUBCOMMANDS = new Set<SnapshotSubcommand | "--help" | "-h">([
 	"-h",
 ]);
 
-const SNAPSHOT_MESSAGE_PREFIX = "pi snapshot:";
 const SNAPSHOT_STASH_FORMAT = "%gd%x09%H%x09%gs";
 const DEFAULT_LIST_LIMIT = 10;
-const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
-const CREATE_SCRIPT_PATH = join(EXTENSION_DIR, "scripts", "create-stash-snapshot.sh");
 
 const SNAPSHOT_HELP_TEXT = [
 	"Git Snapshot",
@@ -175,10 +187,6 @@ function parseCreateArgs(args: string[]): CreateOptions {
 		}
 	}
 
-	if (options.message && !options.message.startsWith(SNAPSHOT_MESSAGE_PREFIX)) {
-		options.message = `${SNAPSHOT_MESSAGE_PREFIX} ${options.message}`;
-	}
-
 	return options;
 }
 
@@ -289,8 +297,19 @@ function formatSnapshotListEntry(entry: SnapshotListEntry): string {
 	return `${entry.stashRef}  ${entry.commit.slice(0, 7)}  ${entry.message}`;
 }
 
-async function listSnapshots(pi: ExtensionAPI): Promise<SnapshotListEntry[]> {
-	const result = await pi.exec("git", ["stash", "list", `--format=${SNAPSHOT_STASH_FORMAT}`]);
+function normalizePathArgument(path: string): string {
+	return path.startsWith("@") ? path.slice(1) : path;
+}
+
+function resolveToolRepoPath(cwd: string, repoPath?: string): string {
+	if (!repoPath) {
+		return cwd;
+	}
+	return resolve(cwd, normalizePathArgument(repoPath));
+}
+
+async function listSnapshots(pi: ExtensionAPI, repoRoot: string): Promise<SnapshotListEntry[]> {
+	const result = await pi.exec("git", ["-C", repoRoot, "stash", "list", `--format=${SNAPSHOT_STASH_FORMAT}`]);
 	if (result.code !== 0) {
 		const stderr = result.stderr.trim() || result.stdout.trim() || "Failed to read git stash list.";
 		throw new Error(stderr);
@@ -298,8 +317,8 @@ async function listSnapshots(pi: ExtensionAPI): Promise<SnapshotListEntry[]> {
 	return parseSnapshotList(result.stdout);
 }
 
-async function getDirtyRepoSummary(pi: ExtensionAPI): Promise<string[]> {
-	const result = await pi.exec("git", ["status", "--porcelain"]);
+async function getDirtyRepoSummary(pi: ExtensionAPI, repoRoot: string): Promise<string[]> {
+	const result = await pi.exec("git", ["-C", repoRoot, "status", "--porcelain"]);
 	if (result.code !== 0) {
 		const stderr = result.stderr.trim() || result.stdout.trim() || "Failed to inspect git status.";
 		throw new Error(stderr);
@@ -324,31 +343,22 @@ async function chooseSnapshot(
 	return snapshots.find((entry) => formatSnapshotListEntry(entry) === selected);
 }
 
-async function handleCreate(pi: ExtensionAPI, args: string[], ctx: ExtensionCommandContext): Promise<void> {
+async function handleCreate(args: string[], ctx: ExtensionCommandContext): Promise<void> {
 	await ctx.waitForIdle();
 	const options = parseCreateArgs(args);
-	const commandArgs = [CREATE_SCRIPT_PATH, "--json"];
-	if (options.message) {
-		commandArgs.push("--message", options.message);
-	}
-	if (options.trackedOnly) {
-		commandArgs.push("--tracked-only");
-	}
-
-	const result = await pi.exec("bash", commandArgs);
-	if (result.code !== 0) {
-		const stderr = result.stderr.trim() || result.stdout.trim() || "Snapshot creation failed.";
-		throw new Error(stderr);
-	}
-
-	const parsed = JSON.parse(result.stdout.trim()) as CreateSnapshotResult;
-	notifyOrLog(ctx, summarizeCreateResult(parsed), parsed.created ? "info" : "warning");
+	const result = await createSnapshot({
+		repoPath: ctx.cwd,
+		message: options.message,
+		trackedOnly: options.trackedOnly,
+	});
+	notifyOrLog(ctx, summarizeCreateResult(result), result.created ? "info" : "warning");
 }
 
 async function handleList(pi: ExtensionAPI, args: string[], ctx: ExtensionCommandContext): Promise<void> {
 	await ctx.waitForIdle();
 	const options = parseListArgs(args);
-	const snapshots = await listSnapshots(pi);
+	const repoRoot = await resolveRepoRoot(ctx.cwd);
+	const snapshots = await listSnapshots(pi, repoRoot);
 	const limited = snapshots.slice(0, options.limit);
 
 	if (limited.length === 0) {
@@ -371,7 +381,8 @@ async function handleList(pi: ExtensionAPI, args: string[], ctx: ExtensionComman
 async function handleRestore(pi: ExtensionAPI, args: string[], ctx: ExtensionCommandContext): Promise<void> {
 	await ctx.waitForIdle();
 	const options = parseRestoreArgs(args);
-	const snapshots = await listSnapshots(pi);
+	const repoRoot = await resolveRepoRoot(ctx.cwd);
+	const snapshots = await listSnapshots(pi, repoRoot);
 	if (snapshots.length === 0) {
 		notifyOrLog(ctx, `No snapshots found with prefix ${SNAPSHOT_MESSAGE_PREFIX}`, "warning");
 		return;
@@ -394,7 +405,7 @@ async function handleRestore(pi: ExtensionAPI, args: string[], ctx: ExtensionCom
 		}
 	}
 
-	const dirtyEntries = await getDirtyRepoSummary(pi);
+	const dirtyEntries = await getDirtyRepoSummary(pi, repoRoot);
 	if (dirtyEntries.length > 0 && !options.yes) {
 		if (!ctx.hasUI) {
 			throw new Error("Refusing to restore onto a dirty repo without --yes in non-interactive mode.");
@@ -411,7 +422,7 @@ async function handleRestore(pi: ExtensionAPI, args: string[], ctx: ExtensionCom
 		}
 	}
 
-	const gitArgs = ["stash", "apply"];
+	const gitArgs = ["-C", repoRoot, "stash", "apply"];
 	if (options.restoreIndex) {
 		gitArgs.push("--index");
 	}
@@ -431,6 +442,33 @@ async function handleRestore(pi: ExtensionAPI, args: string[], ctx: ExtensionCom
 }
 
 export default function gitSnapshotExtension(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "git_snapshot_create",
+		label: "Git Snapshot Create",
+		description: "Create a stash-style safety snapshot of a Git workspace without changing the worktree or index.",
+		promptSnippet: "Create a stash-style safety snapshot of a Git workspace without changing the worktree or index.",
+		promptGuidelines: [
+			"Use this tool before risky or mutating git operations when you need a recoverable safety snapshot.",
+			"Omit repoPath to snapshot the current session repository; set repoPath only when the user explicitly names another repository.",
+			"Do not batch this tool call in the same assistant turn as mutating git commands. Wait for the snapshot result first.",
+			"Prefer this tool over shelling out to internal snapshot scripts or ad-hoc git stash commands when a workspace snapshot is required.",
+		],
+		parameters: SnapshotCreateToolParams,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const result = await createSnapshot({
+				repoPath: resolveToolRepoPath(ctx.cwd, params.repoPath),
+				message: params.message,
+				trackedOnly: params.trackedOnly,
+				signal,
+			});
+
+			return {
+				content: [{ type: "text", text: summarizeCreateResult(result) }],
+				details: result,
+			};
+		},
+	});
+
 	pi.registerCommand("snapshot", {
 		description: "Create, list, and restore git workspace snapshots via slash command",
 		getArgumentCompletions: (prefix) => {
@@ -471,7 +509,7 @@ export default function gitSnapshotExtension(pi: ExtensionAPI): void {
 
 				switch (parsed.subcommand) {
 					case "create":
-						await handleCreate(pi, parsed.args, ctx);
+						await handleCreate(parsed.args, ctx);
 						return;
 					case "list":
 						await handleList(pi, parsed.args, ctx);

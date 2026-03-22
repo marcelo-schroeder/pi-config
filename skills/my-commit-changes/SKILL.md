@@ -13,6 +13,12 @@ Explicit user invocation of this skill is authorization to inspect, stage, unsta
 
 Do not perform unrelated git operations outside this workflow.
 
+## Dependency
+
+This skill requires the `git-snapshot` extension because Step 4 must use the `git_snapshot_create` tool.
+
+If that tool is unavailable, stop and report that the `git-snapshot` extension must be enabled before this workflow can mutate git state.
+
 ## Step 1: Gather all changes
 
 Run these commands to understand the full picture:
@@ -44,17 +50,21 @@ Then proceed directly to execution unless the user interrupts or gives contrary 
 
 ## Step 4: Create a safety snapshot
 
-Before performing any mutating git command (`git reset`, `git add`, or `git commit`), create a safety snapshot by running:
+Before performing any mutating git command (`git reset`, `git add`, or `git commit`), call the `git_snapshot_create` tool.
 
-```bash
-../../extensions/git-snapshot/scripts/create-stash-snapshot.sh --json
-```
+Use the tool with no arguments unless the user explicitly asked for different snapshot behavior.
+
+Critical sequencing rule:
+
+- Do **not** batch the `git_snapshot_create` tool call in the same assistant turn as mutating git commands.
+- Wait for the snapshot result first.
+- Only after a successful snapshot step may you run mutating git commands.
 
 Behavior:
 
-- If the snapshot command returns `created: true`, briefly report the stash ref and commit hash, then continue.
+- If the tool returns `created: true`, briefly report the stash ref and commit hash, then continue.
 - If it returns `created: false`, continue normally.
-- If the snapshot command fails for any reason, stop immediately, report the error, and do not mutate git state.
+- If the tool fails for any reason, stop immediately, report the error, and do not mutate git state.
 
 ## Step 5: Execute commits
 

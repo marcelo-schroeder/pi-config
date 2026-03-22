@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Development tooling for the pi-config repository",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:git-snapshot": "node --experimental-strip-types extensions/git-snapshot/smoke-test.ts"
   },
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.60.0",
