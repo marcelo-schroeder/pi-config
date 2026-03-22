@@ -14,25 +14,38 @@ import {
 } from "./ui.ts";
 
 const QuestionOptionSchema = Type.Object({
-	value: Type.String({ description: "The value returned when selected" }),
-	label: Type.String({ description: "Display label for the option" }),
-	description: Type.Optional(Type.String({ description: "Optional description shown below label" })),
+	value: Type.String({ description: "The value returned when this option is selected" }),
+	label: Type.String({ description: "Concise option label shown in the selectable list" }),
+	description: Type.Optional(
+		Type.String({
+			description: "Optional secondary text shown below the label to clarify details or tradeoffs",
+		}),
+	),
 });
 
 const QuestionSchema = Type.Object({
 	id: Type.String({ description: "Unique identifier for this question" }),
 	label: Type.Optional(
 		Type.String({
-			description: "Short contextual label for tab bar, e.g. 'Scope', 'Priority' (defaults to Q1, Q2)",
+			description: "Short tab label for multi-question flows; defaults to Q1, Q2, ...",
 		}),
 	),
-	prompt: Type.String({ description: "The full question text to display" }),
-	options: Type.Array(QuestionOptionSchema, { description: "Available options to choose from" }),
-	allowOther: Type.Optional(Type.Boolean({ description: "Allow 'Type something' option (default: true)" })),
+	prompt: Type.String({ description: "Question text shown above the options" }),
+	options: Type.Array(QuestionOptionSchema, {
+		description: "Selectable answers for this question; keep labels concise and use descriptions for nuance",
+	}),
+	allowOther: Type.Optional(
+		Type.Boolean({
+			description:
+				"Allow a free-text 'Type something' fallback when predefined options may not fully cover the user's answer (default: true)",
+		}),
+	),
 });
 
 const QuestionnaireParams = Type.Object({
-	questions: Type.Array(QuestionSchema, { description: "Questions to ask the user" }),
+	questions: Type.Array(QuestionSchema, {
+		description: "One or more structured questions to ask in a single questionnaire flow",
+	}),
 });
 
 function errorResult(
@@ -49,12 +62,15 @@ export default function questionnaire(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
-		description: "Ask structured clarification questions in interactive mode.",
-		promptSnippet: "Ask structured clarification questions with options",
+		description: "Ask one or more structured clarification questions in interactive mode.",
+		promptSnippet: "Ask one or more structured clarification questions with selectable options and optional free-text fallback",
 		promptGuidelines: [
-			"Use for short, concrete clarifications, preferences, or confirmations.",
-			"Prefer when options are clear; use normal chat for open-ended questions.",
-			"Only use if the answer changes the result and UI is available.",
+			"Prefer this tool when missing information can be captured as short structured choices instead of open-ended chat.",
+			"Batch related clarifications into one questionnaire call when possible instead of asking several separate follow-up messages.",
+			"Use multiple questions in one call for independent decisions such as scope, priority, constraints, or preferences.",
+			"Use concise option labels and optional descriptions to explain differences or tradeoffs.",
+			"Keep allowOther enabled when a custom answer may be useful; disable it when the input must be restricted to the listed options.",
+			"Use normal chat instead for broad exploratory discussion, detailed explanations, or when the user needs to provide rich context.",
 		],
 		parameters: QuestionnaireParams,
 
