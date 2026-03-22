@@ -91,14 +91,40 @@ export async function runQuestionnaireUI(
 			return questions[currentTab];
 		}
 
-		function currentOptions(): RenderOption[] {
-			const question = currentQuestion();
+		function optionsForQuestion(question: Question | undefined): RenderOption[] {
 			if (!question) return [];
 			const options: RenderOption[] = [...question.options];
 			if (question.allowOther) {
 				options.push({ value: "__other__", label: "Type something.", isOther: true });
 			}
 			return options;
+		}
+
+		function currentOptions(): RenderOption[] {
+			return optionsForQuestion(currentQuestion());
+		}
+
+		function answerForQuestion(question: Question | undefined): Answer | undefined {
+			return question ? answers.get(question.id) : undefined;
+		}
+
+		function selectedOptionIndexForQuestion(question: Question | undefined): number {
+			if (!question) return 0;
+			const answer = answerForQuestion(question);
+			if (!answer) return 0;
+			if (answer.wasCustom) {
+				return question.allowOther ? question.options.length : 0;
+			}
+			if (answer.index !== undefined) {
+				const maxIndex = Math.max(0, optionsForQuestion(question).length - 1);
+				return Math.max(0, Math.min(answer.index - 1, maxIndex));
+			}
+			const matchedIndex = question.options.findIndex((option) => option.value === answer.value);
+			return matchedIndex >= 0 ? matchedIndex : 0;
+		}
+
+		function syncSelectionToCurrentQuestion(): void {
+			optionIndex = currentTab < questions.length ? selectedOptionIndexForQuestion(currentQuestion()) : 0;
 		}
 
 		function allAnswered(): boolean {
@@ -115,7 +141,7 @@ export async function runQuestionnaireUI(
 			} else {
 				currentTab = questions.length;
 			}
-			optionIndex = 0;
+			syncSelectionToCurrentQuestion();
 			refresh();
 		}
 
@@ -153,13 +179,13 @@ export async function runQuestionnaireUI(
 			if (isMulti) {
 				if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
 					currentTab = (currentTab + 1) % totalTabs;
-					optionIndex = 0;
+					syncSelectionToCurrentQuestion();
 					refresh();
 					return;
 				}
 				if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
 					currentTab = (currentTab - 1 + totalTabs) % totalTabs;
-					optionIndex = 0;
+					syncSelectionToCurrentQuestion();
 					refresh();
 					return;
 				}
@@ -188,9 +214,10 @@ export async function runQuestionnaireUI(
 			if (matchesKey(data, Key.enter) && question) {
 				const option = options[optionIndex];
 				if (option.isOther) {
+					const existingAnswer = answerForQuestion(question);
 					inputMode = true;
 					inputQuestionId = question.id;
-					editor.setText("");
+					editor.setText(existingAnswer?.wasCustom ? existingAnswer.value : "");
 					refresh();
 					return;
 				}
@@ -209,6 +236,7 @@ export async function runQuestionnaireUI(
 
 			const lines: string[] = [];
 			const question = currentQuestion();
+			const answer = answerForQuestion(question);
 			const options = currentOptions();
 			const add = (text: string): void => {
 				lines.push(truncateToWidth(text, width));
@@ -244,15 +272,16 @@ export async function runQuestionnaireUI(
 					const option = options[index];
 					const selected = index === optionIndex;
 					const other = option.isOther === true;
+					const otherHasSavedAnswer = other && answer?.wasCustom;
 					const prefix = selected ? theme.fg("accent", "> ") : "  ";
 					const color = selected ? "accent" : "text";
-					if (other && inputMode) {
-						add(prefix + theme.fg("accent", `${index + 1}. ${option.label} ✎`));
-					} else {
-						add(prefix + theme.fg(color, `${index + 1}. ${option.label}`));
-					}
+					const label = other && (inputMode || otherHasSavedAnswer) ? `${index + 1}. ${option.label} ✎` : `${index + 1}. ${option.label}`;
+					add(prefix + theme.fg(color, label));
 					if (option.description) {
 						add(`     ${theme.fg("muted", option.description)}`);
+					}
+					if (otherHasSavedAnswer && !inputMode) {
+						add(`     ${theme.fg("muted", "Saved answer: ")}${theme.fg("text", answer.label)}`);
 					}
 				}
 			}
