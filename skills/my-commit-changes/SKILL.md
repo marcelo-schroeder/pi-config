@@ -46,7 +46,7 @@ Show a numbered list of proposed commits, each with:
 - The Conventional Commit message (`feat`, `fix`, `chore`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`)
 - The list of files in that commit
 
-Then proceed directly to execution unless the user interrupts or gives contrary instructions.
+Then proceed directly to snapshot creation and execution unless the user interrupts or gives contrary instructions.
 
 ## Step 4: Create a safety snapshot
 
@@ -56,13 +56,14 @@ Use the tool with no arguments unless the user explicitly asked for different sn
 
 Critical sequencing rule:
 
-- Do **not** batch the `git_snapshot_create` tool call in the same assistant turn as mutating git commands.
-- Wait for the snapshot result first.
-- Only after a successful snapshot step may you run mutating git commands.
+- Call `git_snapshot_create` before any mutating git command.
+- Do not start mutating git commands until the snapshot tool has returned successfully.
+- After a successful snapshot result, continue immediately with the planned git commands as part of the same user request.
+- Do not ask the user for an extra reply or confirmation unless the snapshot fails or the user explicitly asked to review the plan before execution.
 
 Behavior:
 
-- If the tool returns `created: true`, briefly report the stash ref and commit hash, then continue.
+- If the tool returns `created: true`, continue with execution and include the stash ref and commit hash in the final report.
 - If it returns `created: false`, continue normally.
 - If the tool fails for any reason, stop immediately, report the error, and do not mutate git state.
 

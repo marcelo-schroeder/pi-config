@@ -450,7 +450,8 @@ export default function gitSnapshotExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use this tool before risky or mutating git operations when you need a recoverable safety snapshot.",
 			"Omit repoPath to snapshot the current session repository; set repoPath only when the user explicitly names another repository.",
-			"Do not batch this tool call in the same assistant turn as mutating git commands. Wait for the snapshot result first.",
+			"Do not start mutating git commands until this tool has returned successfully.",
+			"If it succeeds, you may continue with the requested git operations in the same user request; do not require an extra user reply unless the user asked to review first.",
 			"Prefer this tool over shelling out to internal snapshot scripts or ad-hoc git stash commands when a workspace snapshot is required.",
 		],
 		parameters: SnapshotCreateToolParams,
