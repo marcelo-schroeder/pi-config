@@ -1,12 +1,25 @@
 # Git Snapshot Extension
 
-Slash command for creating, listing, and restoring git workspace snapshots without exposing snapshot functionality as an LLM tool.
+Provides `/snapshot` commands plus a guarded `git_snapshot_create` LLM tool for stash-style workspace safety snapshots.
 
-## Command Surface
+## Public Surface
+
+### Slash commands
 
 - `/snapshot create [--message "..."] [--tracked-only]`
 - `/snapshot list [--limit N]`
 - `/snapshot restore [<snapshot>] [--no-index] [--yes]`
+
+### LLM tool
+
+- `git_snapshot_create`
+  - `repoPath?`
+  - `message?`
+  - `trackedOnly?`
+
+The tool defaults to the current session repository when `repoPath` is omitted.
+
+The LLM tool is reserved for explicit `/skill:my-commit-changes` runs. For direct/manual snapshot requests, use `/snapshot create` instead.
 
 ## Frozen Behavior
 
@@ -14,10 +27,11 @@ Slash command for creating, listing, and restoring git workspace snapshots witho
 
 - Creates a stash-style snapshot of the current workspace.
 - Includes untracked files by default.
-- `--tracked-only` excludes untracked files.
+- `--tracked-only` / `trackedOnly: true` excludes untracked files.
 - Must preserve the current worktree and index state.
 - Requires an existing `HEAD` commit for v1.
 - Does not include ignored files in v1.
+- Uses an internal TypeScript implementation shared by `/snapshot create` and `git_snapshot_create`.
 
 ### list
 
@@ -42,3 +56,9 @@ Slash command for creating, listing, and restoring git workspace snapshots witho
 - Interactive mode should prefer pickers and confirmations.
 - Non-interactive mode should fail conservatively for restore operations.
 - v1 intentionally does not persist snapshot metadata into pi session entries (`appendEntry` is not used).
+
+## Notes
+
+- Direct invocation of old private helper scripts is not a supported interface.
+- Skills in this repo should use the `git_snapshot_create` tool instead of shelling out to snapshot internals.
+- General agent turns are blocked from using `git_snapshot_create`; the extension only allows it for explicit `/skill:my-commit-changes` runs.

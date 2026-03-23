@@ -1,5 +1,5 @@
 /**
- * Shared safety rules for session modes.
+ * Shared safety rules for read-only mode.
  */
 
 const DESTRUCTIVE_PATTERNS = [

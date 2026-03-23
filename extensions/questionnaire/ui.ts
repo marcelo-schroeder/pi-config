@@ -57,12 +57,15 @@ export async function runQuestionnaireUI(
 
 	const isMulti = questions.length > 1;
 	const totalTabs = questions.length + 1;
+	const numericShortcutDelayMs = 700;
 
 	return await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
 		let currentTab = 0;
 		let optionIndex = 0;
 		let inputMode = false;
 		let inputQuestionId: string | null = null;
+		let numberBuffer = "";
+		let numberBufferTimer: ReturnType<typeof setTimeout> | null = null;
 		let cachedLines: string[] | undefined;
 		const answers = new Map<string, Answer>();
 
@@ -83,7 +86,20 @@ export async function runQuestionnaireUI(
 			tui.requestRender();
 		}
 
+		function clearNumberBuffer(shouldRefresh = false): void {
+			const hadBuffer = numberBuffer.length > 0;
+			if (numberBufferTimer) {
+				clearTimeout(numberBufferTimer);
+				numberBufferTimer = null;
+			}
+			numberBuffer = "";
+			if (hadBuffer && shouldRefresh) {
+				refresh();
+			}
+		}
+
 		function submit(cancelled: boolean): void {
+			clearNumberBuffer(false);
 			done({ questions, answers: Array.from(answers.values()), cancelled });
 		}
 
@@ -91,8 +107,7 @@ export async function runQuestionnaireUI(
 			return questions[currentTab];
 		}
 
-		function currentOptions(): RenderOption[] {
-			const question = currentQuestion();
+		function optionsForQuestion(question: Question | undefined): RenderOption[] {
 			if (!question) return [];
 			const options: RenderOption[] = [...question.options];
 			if (question.allowOther) {
@@ -101,8 +116,133 @@ export async function runQuestionnaireUI(
 			return options;
 		}
 
+		function currentOptions(): RenderOption[] {
+			return optionsForQuestion(currentQuestion());
+		}
+
+		function answerForQuestion(question: Question | undefined): Answer | undefined {
+			return question ? answers.get(question.id) : undefined;
+		}
+
+		function selectedOptionIndexForQuestion(question: Question | undefined): number {
+			if (!question) return 0;
+			const answer = answerForQuestion(question);
+			if (!answer) return 0;
+			if (answer.wasCustom) {
+				return question.allowOther ? question.options.length : 0;
+			}
+			if (answer.index !== undefined) {
+				const maxIndex = Math.max(0, optionsForQuestion(question).length - 1);
+				return Math.max(0, Math.min(answer.index - 1, maxIndex));
+			}
+			const matchedIndex = question.options.findIndex((option) => option.value === answer.value);
+			return matchedIndex >= 0 ? matchedIndex : 0;
+		}
+
+		function bufferedOptionIndexForQuestion(question: Question | undefined): number | undefined {
+			if (!question || numberBuffer.length === 0 || numberBuffer.startsWith("0")) return undefined;
+			const parsed = Number.parseInt(numberBuffer, 10);
+			const options = optionsForQuestion(question);
+			if (!Number.isInteger(parsed) || parsed < 1 || parsed > options.length) return undefined;
+			return parsed - 1;
+		}
+
+		function syncSelectionToCurrentQuestion(): void {
+			optionIndex = currentTab < questions.length ? selectedOptionIndexForQuestion(currentQuestion()) : 0;
+		}
+
 		function allAnswered(): boolean {
 			return questions.every((question) => answers.has(question.id));
+		}
+
+		function hasLongerValidNumberPrefix(prefix: string, maxOptionNumber: number): boolean {
+			if (prefix.length === 0) return false;
+			for (let value = 1; value <= maxOptionNumber; value += 1) {
+				const optionNumber = `${value}`;
+				if (optionNumber.startsWith(prefix) && optionNumber !== prefix) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		function scheduleNumberBufferCommit(): void {
+			if (numberBufferTimer) {
+				clearTimeout(numberBufferTimer);
+			}
+			numberBufferTimer = setTimeout(() => {
+				numberBufferTimer = null;
+				commitNumberBuffer();
+			}, numericShortcutDelayMs);
+		}
+
+		function saveAnswer(questionId: string, value: string, label: string, wasCustom: boolean, index?: number): void {
+			answers.set(questionId, { id: questionId, value, label, wasCustom, index });
+		}
+
+		function activateOption(index: number): void {
+			clearNumberBuffer(false);
+			const question = currentQuestion();
+			const options = currentOptions();
+			if (!question || index < 0 || index >= options.length) return;
+			optionIndex = index;
+			const option = options[index];
+			if (option.isOther) {
+				const existingAnswer = answerForQuestion(question);
+				inputMode = true;
+				inputQuestionId = question.id;
+				editor.setText(existingAnswer?.wasCustom ? existingAnswer.value : "");
+				refresh();
+				return;
+			}
+			saveAnswer(question.id, option.value, option.label, false, index + 1);
+			advanceAfterAnswer();
+		}
+
+		function commitNumberBuffer(): boolean {
+			const question = currentQuestion();
+			const bufferedIndex = bufferedOptionIndexForQuestion(question);
+			const hadBuffer = numberBuffer.length > 0;
+			clearNumberBuffer(false);
+			if (bufferedIndex === undefined) {
+				if (hadBuffer) {
+					refresh();
+				}
+				return false;
+			}
+			activateOption(bufferedIndex);
+			return true;
+		}
+
+		function handleNumericShortcut(data: string): boolean {
+			if (!/^\d$/.test(data) || currentTab === questions.length || inputMode) return false;
+			const question = currentQuestion();
+			if (!question) return false;
+			if (numberBuffer.length === 0 && data === "0") return false;
+
+			const nextBuffer = `${numberBuffer}${data}`;
+			if (nextBuffer.startsWith("0")) {
+				clearNumberBuffer(true);
+				return true;
+			}
+
+			const options = optionsForQuestion(question);
+			const parsed = Number.parseInt(nextBuffer, 10);
+			if (!Number.isInteger(parsed) || parsed < 1 || parsed > options.length) {
+				clearNumberBuffer(true);
+				return true;
+			}
+
+			numberBuffer = nextBuffer;
+			const isAmbiguous = hasLongerValidNumberPrefix(numberBuffer, options.length);
+			if (isAmbiguous) {
+				scheduleNumberBufferCommit();
+				refresh();
+				return true;
+			}
+
+			activateOption(parsed - 1);
+			return true;
 		}
 
 		function advanceAfterAnswer(): void {
@@ -115,12 +255,8 @@ export async function runQuestionnaireUI(
 			} else {
 				currentTab = questions.length;
 			}
-			optionIndex = 0;
+			syncSelectionToCurrentQuestion();
 			refresh();
-		}
-
-		function saveAnswer(questionId: string, value: string, label: string, wasCustom: boolean, index?: number): void {
-			answers.set(questionId, { id: questionId, value, label, wasCustom, index });
 		}
 
 		editor.onSubmit = (value) => {
@@ -150,16 +286,27 @@ export async function runQuestionnaireUI(
 			const question = currentQuestion();
 			const options = currentOptions();
 
+			if (handleNumericShortcut(data)) {
+				return;
+			}
+
+			if (numberBuffer.length > 0 && matchesKey(data, Key.enter)) {
+				commitNumberBuffer();
+				return;
+			}
+
 			if (isMulti) {
 				if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+					clearNumberBuffer(false);
 					currentTab = (currentTab + 1) % totalTabs;
-					optionIndex = 0;
+					syncSelectionToCurrentQuestion();
 					refresh();
 					return;
 				}
 				if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
+					clearNumberBuffer(false);
 					currentTab = (currentTab - 1 + totalTabs) % totalTabs;
-					optionIndex = 0;
+					syncSelectionToCurrentQuestion();
 					refresh();
 					return;
 				}
@@ -175,27 +322,20 @@ export async function runQuestionnaireUI(
 			}
 
 			if (matchesKey(data, Key.up)) {
+				clearNumberBuffer(false);
 				optionIndex = Math.max(0, optionIndex - 1);
 				refresh();
 				return;
 			}
 			if (matchesKey(data, Key.down)) {
+				clearNumberBuffer(false);
 				optionIndex = Math.min(options.length - 1, optionIndex + 1);
 				refresh();
 				return;
 			}
 
 			if (matchesKey(data, Key.enter) && question) {
-				const option = options[optionIndex];
-				if (option.isOther) {
-					inputMode = true;
-					inputQuestionId = question.id;
-					editor.setText("");
-					refresh();
-					return;
-				}
-				saveAnswer(question.id, option.value, option.label, false, optionIndex + 1);
-				advanceAfterAnswer();
+				activateOption(optionIndex);
 				return;
 			}
 
@@ -209,8 +349,13 @@ export async function runQuestionnaireUI(
 
 			const lines: string[] = [];
 			const question = currentQuestion();
+			const answer = answerForQuestion(question);
 			const options = currentOptions();
-			const add = (text: string): void => lines.push(truncateToWidth(text, width));
+			const bufferedOptionIndex = bufferedOptionIndexForQuestion(question);
+			const visibleOptionIndex = bufferedOptionIndex ?? optionIndex;
+			const add = (text: string): void => {
+				lines.push(truncateToWidth(text, width));
+			};
 
 			add(theme.fg("accent", "─".repeat(width)));
 
@@ -240,17 +385,19 @@ export async function runQuestionnaireUI(
 			function renderOptions(): void {
 				for (let index = 0; index < options.length; index += 1) {
 					const option = options[index];
-					const selected = index === optionIndex;
+					const selected = index === visibleOptionIndex;
 					const other = option.isOther === true;
+					const otherHasSavedAnswer = other && answer?.wasCustom;
 					const prefix = selected ? theme.fg("accent", "> ") : "  ";
 					const color = selected ? "accent" : "text";
-					if (other && inputMode) {
-						add(prefix + theme.fg("accent", `${index + 1}. ${option.label} ✎`));
-					} else {
-						add(prefix + theme.fg(color, `${index + 1}. ${option.label}`));
-					}
+					const label =
+						other && (inputMode || otherHasSavedAnswer) ? `${index + 1}. ${option.label} ✎` : `${index + 1}. ${option.label}`;
+					add(prefix + theme.fg(color, label));
 					if (option.description) {
 						add(`     ${theme.fg("muted", option.description)}`);
+					}
+					if (otherHasSavedAnswer && !inputMode) {
+						add(`     ${theme.fg("muted", "Saved answer: ")}${theme.fg("text", answer.label)}`);
 					}
 				}
 			}
@@ -293,9 +440,19 @@ export async function runQuestionnaireUI(
 
 			lines.push("");
 			if (!inputMode) {
-				const help = isMulti
-					? " Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
-					: " ↑↓ navigate • Enter select • Esc cancel";
+				if (numberBuffer.length > 0 && currentTab !== questions.length && question) {
+					const bufferedOption = bufferedOptionIndex !== undefined ? options[bufferedOptionIndex] : undefined;
+					const suffix = bufferedOption ? ` → ${bufferedOptionIndex! + 1}. ${bufferedOption.label}` : "";
+					add(theme.fg("muted", " Number: ") + theme.fg("accent", numberBuffer) + theme.fg("dim", suffix));
+				}
+				const help =
+					currentTab === questions.length
+						? isMulti
+							? " Tab/←→ navigate • Enter confirm • Esc cancel"
+							: " Enter confirm • Esc cancel"
+						: isMulti
+							? " Type number to answer • Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
+							: " Type number to answer • ↑↓ navigate • Enter select • Esc cancel";
 				add(theme.fg("dim", help));
 			}
 			add(theme.fg("accent", "─".repeat(width)));

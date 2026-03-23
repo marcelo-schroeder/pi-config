@@ -5,8 +5,6 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
-import type { SessionMode } from "./types.ts";
-
 interface AssistantUsageLike {
 	input?: number;
 	output?: number;
@@ -65,20 +63,14 @@ function getAutoCompactionEnabled(cwd: string): boolean {
 	return enabled;
 }
 
-export function getModeBadgeText(mode: SessionMode): string | undefined {
-	if (mode === "read-only") return "🔒 read-only";
-	if (mode === "plan") return "🧭 plan";
-	return undefined;
-}
-
-export function installSessionModesFooter(
+export function installReadOnlyFooter(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	mode: SessionMode,
+	readOnlyEnabled: boolean,
 ): void {
 	if (!ctx.hasUI) return;
 
-	const modeBadge = getModeBadgeText(mode);
+	const modeBadge = readOnlyEnabled ? "🔒 read-only" : undefined;
 	const autoCompactEnabled = getAutoCompactionEnabled(ctx.cwd);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
@@ -167,7 +159,8 @@ export function installSessionModesFooter(
 				}
 
 				let modelInfo = rightSideWithoutProvider;
-				const modeSuffix = modeBadge ? ` ${modeBadge}` : "";
+				const modeSeparator = modeBadge ? " • " : "";
+				const modeSuffix = modeBadge ? `${modeSeparator}${modeBadge}` : "";
 				if (footerData.getAvailableProviderCount() > 1 && model) {
 					const candidateModelInfo = `(${model.provider}) ${rightSideWithoutProvider}`;
 					const candidateRightSide = `${candidateModelInfo}${modeSuffix}`;
@@ -176,32 +169,43 @@ export function installSessionModesFooter(
 					}
 				}
 
-				const rightSide = modeBadge ? `${modelInfo} ${modeBadge}` : modelInfo;
-				const rightSideWidth = visibleWidth(rightSide);
+				const styledModelInfo = theme.fg("dim", modelInfo);
+				const styledModeSuffix = modeBadge
+					? `${theme.fg("dim", modeSeparator)}${theme.fg("warning", modeBadge)}`
+					: "";
+				const rightSide = `${styledModelInfo}${styledModeSuffix}`;
+				const rightSideWidth = visibleWidth(`${modelInfo}${modeSuffix}`);
 				const minPadding = 2;
 				const totalNeeded = statsLeftWidth + minPadding + rightSideWidth;
+				const dimStatsLeft = theme.fg("dim", statsLeft);
 
 				let statsLine: string;
 				if (totalNeeded <= width) {
 					const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-					statsLine = statsLeft + padding + rightSide;
+					statsLine = dimStatsLeft + padding + rightSide;
 				} else {
 					const availableForRight = width - statsLeftWidth - minPadding;
 					if (availableForRight > 0) {
-						const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
+						let truncatedRight = truncateToWidth(rightSide, availableForRight, "");
+						if (styledModeSuffix) {
+							const modeSuffixWidth = visibleWidth(modeSuffix);
+							if (availableForRight >= modeSuffixWidth) {
+								const availableForModelInfo = Math.max(0, availableForRight - modeSuffixWidth);
+								const truncatedModelInfo =
+									availableForModelInfo > 0 ? truncateToWidth(styledModelInfo, availableForModelInfo, "") : "";
+								truncatedRight = `${truncatedModelInfo}${styledModeSuffix}`;
+							}
+						}
 						const truncatedRightWidth = visibleWidth(truncatedRight);
 						const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedRightWidth));
-						statsLine = statsLeft + padding + truncatedRight;
+						statsLine = dimStatsLeft + padding + truncatedRight;
 					} else {
-						statsLine = statsLeft;
+						statsLine = dimStatsLeft;
 					}
 				}
 
-				const dimStatsLeft = theme.fg("dim", statsLeft);
-				const remainder = statsLine.slice(statsLeft.length);
-				const dimRemainder = theme.fg("dim", remainder);
 				const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
-				const lines = [pwdLine, dimStatsLeft + dimRemainder];
+				const lines = [pwdLine, statsLine];
 
 				const remainingStatuses = Array.from(footerData.getExtensionStatuses().values())
 					.filter((text): text is string => typeof text === "string" && text.trim().length > 0)
