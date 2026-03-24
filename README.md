@@ -89,9 +89,10 @@ Enable these with `pi config` after installing the repo as a Pi package.
 
 | Extension | Purpose | Docs |
 | --- | --- | --- |
+| `git-snapshot` | Adds `/snapshot` commands plus the `git_snapshot_create` tool for stash-style workspace snapshots. | [`extensions/git-snapshot/README.md`](extensions/git-snapshot/README.md) |
+| `my-new-cmux-tab` | Adds `/my-new-cmux-tab` to open a new sibling cmux tab, using the active `piw` worktree root when applicable. | [`extensions/my-new-cmux-tab/README.md`](extensions/my-new-cmux-tab/README.md) |
 | `questionnaire` | Structured interactive question/answer tool for short clarifications and confirmations. Companion extension used by other workflows in this repo. | [`extensions/questionnaire/README.md`](extensions/questionnaire/README.md) |
 | `read-only` | Persisted session-scoped read-only mode with restricted tools, safe bash allowlisting, and integrated footer UI. | [`extensions/read-only/README.md`](extensions/read-only/README.md) |
-| `git-snapshot` | Adds `/snapshot` commands plus the `git_snapshot_create` tool for stash-style workspace snapshots. | [`extensions/git-snapshot/README.md`](extensions/git-snapshot/README.md) |
 
 ## Skills
 
